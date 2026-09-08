@@ -1,0 +1,8 @@
+# Never upload to Railway with `railway up`
+.venv/
+__pycache__/
+*.pyc
+.env
+storage/*
+legacy/
+.git/
