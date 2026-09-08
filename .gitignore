@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Secrets — never commit; use .env.example as the template.
+.env
+.env.*
+!.env.example
+
+# Local file storage (receipts, invoices, reports). Production uses Cloudinary.
+storage/*
+!storage/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

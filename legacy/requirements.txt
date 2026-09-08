@@ -1,0 +1,9 @@
+anthropic>=0.40
+playwright>=1.47
+pandas>=2.2
+openpyxl>=3.1
+python-dotenv>=1.0
+pyyaml>=6.0
+openai>=1.50          # DeepSeek via OpenAI-compatible API
+slack_sdk>=3.27       # optional: Slack notification
+# weasyprint>=62      # optional: PDF summary (HTML always generated)

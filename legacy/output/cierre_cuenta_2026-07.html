@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Cierre 2026-07 — cuenta</title>
+<style>
+  body { font-family: -apple-system, Helvetica, sans-serif; margin: 40px; color: #1a1a2e; }
+  h1 { font-size: 22px; } h2 { font-size: 16px; margin-top: 28px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  th, td { border: 1px solid #d0d0e0; padding: 6px 10px; font-size: 13px; text-align: left; }
+  th { background: #f0f0f8; }
+  .ok { color: #0a7a3d; font-weight: 600; } .fail { color: #b3261e; font-weight: 600; }
+  .big { font-size: 18px; font-weight: 700; }
+</style></head><body>
+<h1>Mi Empresa — Cierre de mes 2026-07</h1>
+<p>Cuenta: <b>cuenta</b></p>
+
+<h2>Totales</h2>
+<table>
+<tr><th>Total banco</th><th>Total libros</th><th>Diferencia</th><th>% conciliación</th></tr>
+<tr><td>31,079,187.55</td><td>35,385,905.21</td>
+<td class="big fail">-4,306,717.66</td><td>86%</td></tr>
+</table>
+
+<h2>Checklist de cierre</h2>
+<table><tr><th>Validación</th><th>Estado</th><th>Detalle</th></tr><tr><td>totals_match</td><td class="fail">FALLA</td><td>bank 31,079,187.55 vs books 35,385,905.21 → diff -4,306,717.66</td></tr><tr><td>match_rate</td><td class="fail">FALLA</td><td>86% (threshold 90%)</td></tr><tr><td>period_coverage_bank</td><td class="ok">OK</td><td>all inside 2026-07</td></tr><tr><td>period_coverage_books</td><td class="ok">OK</td><td>all inside 2026-07</td></tr><tr><td>duplicates_bank</td><td class="ok">OK</td><td>none</td></tr><tr><td>duplicates_books</td><td class="fail">FALLA</td><td>1 suspected duplicates</td></tr></table>
+
+<h2>Partidas pendientes</h2>
+<p>4 en banco sin contrapartida en libros · 3 en libros sin contrapartida en banco.
+Ver detalle en el Excel de conciliación.</p>
+</body></html>

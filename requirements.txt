@@ -1,0 +1,16 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+pandas>=2.2
+openpyxl>=3.1
+python-dotenv>=1.0
+python-multipart>=0.0.12
+pyjwt>=2.9             # signed access tokens (HS256)
+bcrypt>=4.2            # password hashing
+httpx>=0.28
+cloudinary>=1.41
+openai>=1.50          # DeepSeek vía API compatible con OpenAI
+reportlab>=4.2         # deterministic PDF generation
+pypdf>=5.1             # PDF text extraction for chat attachments
+pillow>=11.0           # image metadata for chat attachments

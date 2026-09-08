@@ -1,0 +1,18 @@
+# Portales a recolectar en el cierre. Un portal = una entrada.
+# El portal con name "books" es el lado contable; los demás se concilian contra él.
+# Los campos module_url/url_hint se afinan en la primera corrida asistida.
+
+portals:
+  - name: bancolombia
+    url_hint: bancolombia.com
+    module_url: ""            # deep link al módulo de movimientos (se aprende en la corrida asistida)
+    module_description: "account movements list with a date-range filter"
+    allowed_scope: "account movements / statements module (read-only)"
+    # date_selectors se llenará cuando el agente aprenda los CSS reales:
+    # date_selectors: "input#fechaDesde | input#fechaHasta | button#consultar"
+
+  - name: books
+    url_hint: alegra.com
+    module_url: ""
+    module_description: "bank ledger / auxiliary book report with a date filter"
+    allowed_scope: "reports / bank ledger module (read-only)"
