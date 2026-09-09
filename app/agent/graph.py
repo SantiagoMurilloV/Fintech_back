@@ -33,11 +33,12 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import AgentRun, Conversation
 from ..services import llm
-from . import blocks, drafts, learning, parsing, router, skills
+from . import blocks, conversation, drafts, formatting, learning, parsing, router, skills
 from .registry import ToolResult, get as get_tool, schemas
 from . import tools as _tools  # noqa: F401 — importing registers every tool
 
@@ -59,21 +60,45 @@ Rules:
 - Periods use the YYYY-MM format.
 - A conceptual finance or crypto question, a greeting or anything conversational
   goes to answer_question; pass the message as its `question` argument.
+- The recent conversation may be given. A message that corrects or refines the
+  previous request («no, con el monto más grande», «¿y en agosto?») is the
+  previous request with that change applied: plan it that way.
 - If no tool clearly fits, return {"tool": "answer_question", "arguments": {}} —
   it will answer naturally or ask for the missing detail."""
 
-NARRATOR_PROMPT = """You write one short paragraph introducing a financial result.
+NARRATOR_PROMPT = """You are the voice of a financial assistant in a chat. You receive the
+recent conversation, the user's latest message and the data the panel computed
+for it (JSON). Write the reply that goes above the rendered result.
 
 Hard rules:
-- Use ONLY figures present in the JSON given to you. Never add, round or
-  extrapolate numbers.
-- Write amounts the way the panel does: compact USD equivalents such as
-  "USD 512,4 k", percentages as "94,3%", counts as "1.284". Never print a raw
-  float like 512400.04.
+- Answer the question that was asked, directly, as a knowledgeable colleague
+  would. Formal Colombian Spanish: «usted», never «vos» or «tú». Two or three
+  sentences, no markdown, no bullet points.
+- If the user greeted or thanked you, acknowledge it briefly first.
+- Use ONLY figures present in the JSON. Every figure there is already written
+  exactly as the panel shows it ("USD 139,00", "USD 512,4 k", "94,3%",
+  "1.284"): copy figures character by character. Never convert, abbreviate or
+  re-scale them, never add or drop a suffix such as "k", "mil" or "millones",
+  and never derive a new number of your own (no sums, differences, ranks or
+  percentages).
+- If the question asks for something the data does not contain (a ranking,
+  a cause, another period), say plainly what the data does show and what is
+  missing, and suggest how to ask for it. Never answer beyond the data.
+- You may add one short interpretation grounded in the panel's criteria below,
+  and relate the result to the previous turn when that helps. Never invent
+  causes.
+- When a computed answer sentence is given to you, say it in your own words as
+  your first sentence: the user does not see the tool's sentence when yours
+  exists. Never write «el resultado ya lo indica» or refer to the table as
+  already saying it. Then add at most two sentences: an acknowledgement, one
+  interpretation or a next step.
+- Only suggest actions the panel offers (listed below). Never mention modules
+  or reports that do not exist.
 - Do not repeat the whole table: the user already sees it rendered.
-- Two sentences maximum, formal Colombian Spanish — address the reader as
-  «usted», never «vos» or «tú» —, no markdown, no bullet points.
 - If the data shows nothing noteworthy, say so plainly."""
+
+# Three sentences is the ceiling the prompt asks for; the cut enforces it.
+NARRATOR_MAX_SENTENCES = 3
 
 
 @dataclass
@@ -138,7 +163,8 @@ def run(db: Session, question: str, history: list[dict] | None = None,
                            draft["tool"], "draft.confirmed")
         _trace_plan(trace, plan)
     else:
-        plan = _node_plan(db, question, trace, attachment_ids, context, draft)
+        plan = _node_plan(db, question, trace, attachment_ids, context, draft, history,
+                          conversation_id)
 
     arguments = _node_resolve(plan, trace, attachment_ids, question)
 
@@ -151,19 +177,25 @@ def run(db: Session, question: str, history: list[dict] | None = None,
         awaiting = True
     else:
         drafts.clear(db, conversation)
-        result, failed = _node_execute(db, plan, arguments, trace)
+        result, failed = _node_execute(db, plan, arguments, trace, history, context)
         # The learning loop: an LLM decision that worked becomes a lookup for
         # the next identical phrasing; a replay that failed is unlearned.
-        if plan.source == "llm" and not failed:
+        if plan.source == "llm" and not failed and not _looks_like_refinement(question):
             learning.remember(db, question, plan.tool, arguments)
         elif plan.source == "learned" and failed:
             learning.forget(db, question)
 
     output_blocks = _node_render(result, trace)
     narrative = ("" if failed or awaiting
-                 else _node_narrate(question, plan, result, trace, context))
+                 else _node_narrate(question, plan, result, trace, context, history))
 
     if narrative:
+        # A tool that opens with its own answer sentence (ranking tools mark it
+        # as `summary`) hands that line to the narrator, who has just said it in
+        # the conversation's own words. One voice, not two saying the same.
+        if (output_blocks and output_blocks[0].get("type") == "text"
+                and output_blocks[0].get("content") == result.summary):
+            output_blocks = output_blocks[1:]
         output_blocks = [blocks.text(narrative)] + output_blocks
     if abandoned:
         output_blocks = [drafts.discarded(abandoned["tool"])] + output_blocks
@@ -190,9 +222,64 @@ def _answer(db: Session, conversation_id: int | None, question: str,
 
 # --------------------------------------------------------------------- nodes
 
+# «¿Y en agosto?», «¿y las rechazadas?», «y el top 10»: a short message that
+# only changes one thing about the previous request.
+REFINEMENT_MAX_WORDS = 7
+_REFINEMENT_OPENER = re.compile(r"^[\s¿¡]*(y|no|mejor|ahora|pero)\b")
+
+
+def _looks_like_refinement(question: str) -> bool:
+    normalized = router.normalize(question)
+    return (len(normalized.split()) <= REFINEMENT_MAX_WORDS
+            and bool(_REFINEMENT_OPENER.search(normalized)))
+
+
+def _previous_call(db: Session, conversation_id: int | None) -> tuple[str, dict] | None:
+    """Tool and arguments of the last executed turn in this conversation."""
+    if not conversation_id:
+        return None
+    last = db.scalars(select(AgentRun).where(AgentRun.conversation_id == conversation_id)
+                      .order_by(AgentRun.id.desc()).limit(1)).first()
+    if last is None:
+        return None
+    step = next((s for s in (last.trace or [])
+                 if s.get("node") == "execute" and s.get("ok") and s.get("tool")), None)
+    return (step["tool"], dict(step.get("args") or {})) if step else None
+
+
+def _refinement(db: Session, conversation_id: int | None, question: str) -> router.Plan | None:
+    """The previous request with one argument changed. No model involved."""
+    if not _looks_like_refinement(question):
+        return None
+    normalized = router.normalize(question)
+    changes: dict = {}
+    period = router.extract_period(question)
+    if period:
+        changes["period"] = period
+    status = router._status(normalized)
+    if status:
+        changes["status"] = status
+    if re.search(r"\b(top|primer[oa]s|ultim[oa]s|las|los)\s+\d{1,3}\b", normalized):
+        changes["limit"] = router._limit(question)
+    if not changes:
+        return None
+    previous = _previous_call(db, conversation_id)
+    if previous is None:
+        return None
+    tool_name, arguments = previous
+    tool = get_tool(tool_name)
+    if tool is None or tool.mutates or tool.conversational:
+        return None
+    accepted = tool.parameters.get("properties", {})
+    if any(key not in accepted for key in changes):
+        return None
+    return router.Plan(tool_name, {**arguments, **changes}, "rules", tool_name, "refine.previous")
+
+
 def _node_plan(db: Session, question: str, trace: list[dict],
                attachment_ids: list[int] | None, context: dict | None = None,
-               draft: dict | None = None) -> router.Plan:
+               draft: dict | None = None, history: list[dict] | None = None,
+               conversation_id: int | None = None) -> router.Plan:
     started = time.perf_counter()
 
     if draft and draft["tool"] == "create_document":
@@ -228,9 +315,13 @@ def _node_plan(db: Session, question: str, trace: list[dict],
     else:
         plan = router.route(question, context)
         if plan is None:
+            plan = _refinement(db, conversation_id, question)
+        if plan is None and not _looks_like_refinement(question):
+            # A refinement depends on the previous turn: it is never a
+            # phrasing worth remembering on its own.
             plan = learning.recall(db, question)
         if plan is None:
-            plan = _llm_plan(db, question, context)
+            plan = _llm_plan(db, question, context, history)
 
         # A fresh attachment makes document tools the natural default when the
         # question itself carries no other instruction.
@@ -330,7 +421,8 @@ def _custom_column_plan(db: Session, plan: router.Plan, question: str) -> router
     return None
 
 
-def _llm_plan(db: Session, question: str, context: dict | None = None) -> router.Plan:
+def _llm_plan(db: Session, question: str, context: dict | None = None,
+              history: list[dict] | None = None) -> router.Plan:
     """Ask the LLM to choose a tool. Falls back to the period summary."""
     fallback = router.Plan("answer_question", {}, "fallback", "answer_question", "no_rule")
     if not llm.is_available():
@@ -354,7 +446,12 @@ def _llm_plan(db: Session, question: str, context: dict | None = None) -> router
         + (f"Playbooks:\n{skill_context}\n\n" if skill_context else "")
         + (f"How this company usually asks (question -> tool already confirmed):\n"
            f"{json.dumps(learned, ensure_ascii=False)}\n\n" if learned else "")
+        + f"Today is {datetime.now().date().isoformat()}; a month named without a year is "
+          f"its most recent occurrence that is not in the future.\n"
         + f"The user is currently viewing: {router.view_label(context)}.\n"
+        + (f"Recent conversation (oldest first):\n"
+           f"{json.dumps(conversation.recent_turns(history, 4, 400), ensure_ascii=False)}\n\n"
+           if history else "")
         + f"Question: {question}",
         temperature=PLANNER_TEMPERATURE, max_tokens=400, json_object=True, caller="planner")
     if not content:
@@ -368,9 +465,13 @@ def _llm_plan(db: Session, question: str, context: dict | None = None) -> router
     name = payload.get("tool")
     if not name or get_tool(name) is None:
         return fallback
-    arguments = payload.get("arguments")
-    return router.Plan(name, arguments if isinstance(arguments, dict) else {},
-                       "llm", payload.get("intent") or name, None)
+    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    # A month named in the question is resolved by the rule-based extractor,
+    # never by the model: it does not know which year «agosto» is.
+    period = router.extract_period(question)
+    if period and "period" in get_tool(name).parameters.get("properties", {}):
+        arguments["period"] = period
+    return router.Plan(name, arguments, "llm", payload.get("intent") or name, None)
 
 
 def _node_resolve(plan: router.Plan, trace: list[dict],
@@ -419,8 +520,9 @@ def _coerce(value, spec: dict):
     return value
 
 
-def _node_execute(db: Session, plan: router.Plan, arguments: dict,
-                  trace: list[dict]) -> tuple[ToolResult, bool]:
+def _node_execute(db: Session, plan: router.Plan, arguments: dict, trace: list[dict],
+                  history: list[dict] | None = None,
+                  context: dict | None = None) -> tuple[ToolResult, bool]:
     started = time.perf_counter()
     tool = get_tool(plan.tool)
     if tool is None:
@@ -429,8 +531,13 @@ def _node_execute(db: Session, plan: router.Plan, arguments: dict,
         return ToolResult(blocks=[blocks.notice(
             f"La herramienta «{plan.tool}» no existe.", tone="danger")]), True
 
+    call = dict(arguments)
+    if tool.conversational:
+        # A talking tool needs what was said before and where the user is.
+        call.update(history=history, view=router.view_label(context))
+
     try:
-        result = tool.handler(db, **arguments)
+        result = tool.handler(db, **call)
         ok, error = True, None
     except TypeError as err:
         db.rollback()
@@ -492,8 +599,9 @@ def _node_render(result: ToolResult, trace: list[dict]) -> list[dict]:
 
 
 def _node_narrate(question: str, plan: router.Plan, result: ToolResult,
-                  trace: list[dict], context: dict | None = None) -> str:
-    """One short paragraph of prose. Skipped when the LLM is not configured."""
+                  trace: list[dict], context: dict | None = None,
+                  history: list[dict] | None = None) -> str:
+    """The assistant's reply above the result. Skipped when the LLM is not configured."""
     started = time.perf_counter()
     tool = get_tool(plan.tool)
     # A creation or edit already states its outcome in plain blocks; asking the
@@ -503,19 +611,53 @@ def _node_narrate(question: str, plan: router.Plan, result: ToolResult,
         trace.append({"node": "narrate", "skipped": True, "ok": True, "ms": 0})
         return ""
 
-    narrative = llm.complete(
-        NARRATOR_PROMPT,
-        f"Pregunta: {question}\n"
-        f"Pantalla actual: {router.view_label(context)}\n"
-        f"Herramienta: {plan.tool}\n"
-        f"Datos: {json.dumps(result.data, ensure_ascii=False, default=str)[:4000]}",
-        temperature=NARRATOR_TEMPERATURE, max_tokens=220, caller="narrator") or ""
+    # Money, percentages and counts reach the model already formatted; it only
+    # has to copy them. Formatting is arithmetic, and arithmetic is not its job.
+    presented = formatting.present(result.data)
+    criteria = skills.content(skills.select(question) or ["monthly_close"])
+    stated = " ".join(block["content"] for block in result.blocks if block.get("type") == "text")
+    capabilities = "\n".join(f"- {registered.examples[0]}" for registered in _tools_with_examples())
+    messages = [
+        *conversation.recent_turns(history, 6, 1200),
+        {"role": "user", "content":
+            f"{question}\n\n"
+            f"[Pantalla actual: {router.view_label(context)} · Herramienta: {plan.tool}]\n"
+            + (f"[Respuesta calculada por la herramienta: {stated}]\n" if stated else "")
+            + f"[Datos calculados: {json.dumps(presented, ensure_ascii=False, default=str)[:4000]}]"},
+    ]
+    narrative = llm.chat(
+        NARRATOR_PROMPT
+        + (f"\n\nPanel criteria:\n{criteria}" if criteria else "")
+        + f"\n\nWhat the panel can do:\n{capabilities}",
+        messages, temperature=NARRATOR_TEMPERATURE, max_tokens=260, caller="narrator") or ""
+    if narrative:
+        narrative = formatting.first_sentences(formatting.strip_markdown(narrative),
+                                               NARRATOR_MAX_SENTENCES)
+
+    # A money figure that neither the data nor the conversation contains,
+    # verbatim, is an invention — «USD 139,0 k» for 139 dollars once reached a
+    # reader. The prose is dropped and the blocks, which are computed, stand
+    # alone. Figures from earlier turns are allowed: comparing with them is
+    # what a conversation does.
+    backing = json.dumps(presented, ensure_ascii=False, default=str) + "\n" \
+        + conversation.transcript(history)
+    unbacked = formatting.unbacked_figures(narrative, backing) if narrative else []
+    if unbacked:
+        log.warning("narrator dropped: figures not in data %s", unbacked)
+        narrative = ""
 
     trace.append({
         "node": "narrate", "ok": True, "used_llm": bool(narrative),
+        "rejected_figures": unbacked or None,
         "ms": round((time.perf_counter() - started) * 1000, 1),
     })
     return narrative
+
+
+def _tools_with_examples():
+    from .registry import all_tools
+    return [registered for registered in all_tools()
+            if registered.examples and registered.name != "answer_question"]
 
 
 def _persist(db: Session, conversation_id: int | None, question: str,

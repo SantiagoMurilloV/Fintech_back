@@ -57,6 +57,10 @@ def heading(content: str, detail: str = "") -> dict:
     return {"type": "heading", "content": content, "detail": detail}
 
 
+# Table rows written into the transcript; beyond this a table is summarised.
+TRANSCRIPT_ROWS = 12
+
+
 def plain_text(blocks: list[dict]) -> str:
     """Flatten blocks to a plain-text transcript.
 
@@ -73,8 +77,18 @@ def plain_text(blocks: list[dict]) -> str:
         elif kind == "kpis":
             parts.append(" · ".join(f"{i['label']}: {i['value']}" for i in block["items"]))
         elif kind == "table":
+            # The rows go into the transcript too: the conversation later asks
+            # «¿cuántas fueron rechazadas?» and the answer must already be here.
             labels = [c["label"] for c in block["columns"]]
-            parts.append(f"[tabla: {', '.join(labels)} — {len(block['rows'])} filas]")
+            keys = [c["key"] for c in block["columns"]]
+            rows = block["rows"]
+            lines = [f"[tabla: {', '.join(labels)} — {len(rows)} filas]"]
+            for row in rows[:TRANSCRIPT_ROWS]:
+                cells = [f"{label}: {row.get(key, '')}" for key, label in zip(keys, labels)]
+                lines.append(" · ".join(str(cell) for cell in cells))
+            if len(rows) > TRANSCRIPT_ROWS:
+                lines.append(f"… y {len(rows) - TRANSCRIPT_ROWS} filas más")
+            parts.append("\n".join(lines))
         elif kind == "chart":
             parts.append(f"[gráfico: {block.get('title') or block['chart_type']}]")
         elif kind == "file":

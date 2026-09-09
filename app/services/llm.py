@@ -25,9 +25,13 @@ def is_available() -> bool:
     return _client is not None
 
 
-def complete(system: str, user: str, *, temperature: float = 0.2, max_tokens: int = 400,
-             json_object: bool = False, caller: str = "llm") -> str | None:
-    """Ask the model once. Returns None when it is unavailable or fails."""
+def chat(system: str, messages: list[dict], *, temperature: float = 0.2,
+         max_tokens: int = 400, json_object: bool = False, caller: str = "llm") -> str | None:
+    """Ask the model with a conversation: prior turns plus the current message.
+
+    `messages` are {"role": "user" | "assistant", "content": str}, oldest
+    first. Returns None when the model is unavailable or fails.
+    """
     if _client is None:
         return None
 
@@ -37,13 +41,17 @@ def complete(system: str, user: str, *, temperature: float = 0.2, max_tokens: in
             temperature=temperature,
             max_tokens=max_tokens,
             **({"response_format": {"type": "json_object"}} if json_object else {}),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=[{"role": "system", "content": system}, *messages],
         )
     except Exception as err:  # noqa: BLE001 — a model failure must not break the turn
         log.warning("%s: model unavailable (%s)", caller, err)
         return None
 
     return (response.choices[0].message.content or "").strip() or None
+
+
+def complete(system: str, user: str, *, temperature: float = 0.2, max_tokens: int = 400,
+             json_object: bool = False, caller: str = "llm") -> str | None:
+    """Ask the model once, without conversation history."""
+    return chat(system, [{"role": "user", "content": user}], temperature=temperature,
+                max_tokens=max_tokens, json_object=json_object, caller=caller)

@@ -20,6 +20,9 @@ class Tool:
     handler: Callable           # (db: Session, **args) -> ToolResult
     mutates: bool = False       # writes to the database
     examples: list[str] = field(default_factory=list)
+    # Receives the recent conversation and the current screen as `history`
+    # and `view`: it talks, so it needs to know what was said before.
+    conversational: bool = False
 
 
 @dataclass
@@ -41,11 +44,12 @@ def register(tool: Tool) -> Tool:
 
 
 def tool(name: str, description: str, parameters: dict, mutates: bool = False,
-         examples: list[str] | None = None):
+         examples: list[str] | None = None, conversational: bool = False):
     """Decorator that registers a handler as a tool."""
     def wrapper(handler: Callable) -> Callable:
         register(Tool(name=name, description=description, parameters=parameters,
-                      handler=handler, mutates=mutates, examples=examples or []))
+                      handler=handler, mutates=mutates, examples=examples or [],
+                      conversational=conversational))
         return handler
     return wrapper
 

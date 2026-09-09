@@ -104,6 +104,27 @@ VIEW_TOOLS = {
 # Phrases that point at "whatever is on screen" instead of naming a subject.
 DEICTIC = r"\b(esto|esta|este|aqui|ahi|pantalla|vista|lo que veo|esta tabla|esta lista)\b"
 
+# Short reactions to what the assistant just said: «¿por qué?», «¿eso es
+# bueno?», «explícame». They are about the previous answer, so they go to the
+# conversational tool, which sees the history — never to a data tool that
+# would answer something else.
+FOLLOW_UP = (r"^[\s¿¡]*(y\s+)?(por\s*que|porque|eso es (bueno|malo|normal|grave|mucho|poco)|"
+             r"es (bueno|malo|normal|grave|preocupante|mucho|poco)|esta (bien|mal)|"
+             r"que opinas?|que te parece|que significa( eso)?|que quiere decir( eso)?|"
+             r"explica\w*|no entiendo|entiendo|como (lo )?interpreto|"
+             r"que (deberia|debo|puedo|tengo que) hacer|que me recomiendas|"
+             r"deberia preocuparme|me preocupa|en que me afecta|dame (mas )?contexto|"
+             r"mas detalles?|detallame|ayudame a entender|en pocas palabras|y eso|"
+             r"como asi|de verdad|seguro|en serio)\b.{0,60}$")
+
+# Words that ask for a ranking: the largest, the smallest, the one with the most.
+SUPERLATIVE = (r"\b(mas (grande|alta|alto|elevad\w*|car[ao]|costos\w*|pequen\w*|baj[ao]|"
+               r"chic[ao]|barat[ao]|ordenes|pedidos|operaciones|transacciones)|mayor(es)?|"
+               r"menor(es)?|maxim\w*|minim\w*|top|ranking|principal(es)?|mejor(es)?|peor(es)?|"
+               r"que mas (factura|compra|paga|vende|gasta|opera)|"
+               r"(factura|compra|paga|vende|gasta|opera|tiene|con) mas|"
+               r"quien(es)? mas|(clientes?|orden(es)?) (que )?mas)\b")
+
 # Verbs that mean "do something", not "show me something". The screen-context
 # shortcuts must never swallow these: "crea una orden aprobada" is a creation,
 # not a request to list approved orders.
@@ -198,6 +219,12 @@ def route(question: str, context: dict | None = None) -> Plan | None:
     if re.search(SMALL_TALK, normalized):
         return Plan("answer_question", {}, "rules", "answer_question", "advisor.smalltalk")
 
+    # --- Follow-ups --------------------------------------------------------
+    # A reaction to the previous answer stays in the conversation.
+    if (not is_command and re.search(FOLLOW_UP, normalized)
+            and not re.search(OWN_DATA, normalized)):
+        return Plan("answer_question", {}, "rules", "answer_question", "advisor.followup")
+
     # --- Conceptual questions --------------------------------------------
     # "¿Qué es el EBITDA?", "¿me conviene facturar en USD?", "¿qué riesgo tiene
     # cobrar en USDT?" hablan de un concepto, no de los registros de la
@@ -208,6 +235,33 @@ def route(question: str, context: dict | None = None) -> Plan | None:
     if (not is_command and re.search(CONCEPTUAL, normalized)
             and not re.search(OWN_DATA, normalized)):
         return Plan("answer_question", {}, "rules", "answer_question", "advisor.concept")
+
+    # --- Rankings --------------------------------------------------------
+    # «la orden más grande», «el cliente con la orden más elevada», «qué cliente
+    # factura más», «top 5 clientes por número de órdenes». Sorting is a tool's
+    # job: a listing cannot answer it and the narrator must not guess it. It
+    # runs before the document rules so «qué cliente factura más» is a ranking,
+    # not an invoice.
+    if not is_command and re.search(SUPERLATIVE, normalized):
+        arguments = with_period({"limit": _limit(question, default=5)})
+        status = _status(normalized)
+        if status:
+            arguments["status"] = status
+        counts_orders = re.search(
+            r"\b(numero|cantidad|volumen)\s+de\s+(ordenes|pedidos)\b|\bmas\s+(ordenes|pedidos)\b",
+            normalized)
+        if re.search(r"\b(orden(es)?|pedidos?|pagos?|transaccion\w*|tickets?)\b", normalized) \
+                and not counts_orders:
+            if re.search(r"\bmenor(es)?\b|\bmas (pequen\w*|baj[ao]|chic[ao]|barat[ao])\b|\bminim\w*",
+                         normalized):
+                arguments["order"] = "asc"
+            return Plan("rank_orders", arguments, "rules", "rank_orders", "ranking.orders")
+        if re.search(r"\bclientes?\b", normalized):
+            arguments["metric"] = "count" if counts_orders else "amount"
+            return Plan("rank_customers", arguments, "rules", "rank_customers", "ranking.customers")
+        # A superlative without a clear subject («no, con el monto más grande»)
+        # refines the previous turn; no later rule fits it, so the planner,
+        # which sees the history, decides.
 
     # --- Documents -------------------------------------------------------
     if re.search(r"\b(lee|leer|revisa|que dice|contenido)\b.*\b(pdf|documento|archivo|adjunto|imagen|factura)\b",

@@ -42,6 +42,10 @@ plan  →  resolve  →  execute  →  render  →  narrate
 - **render** — the tool returns typed blocks (table, KPIs, chart, file, list,
   notice) that the frontend paints as real UI.
 - **narrate** — an optional paragraph of prose, restricted to the tool's data.
+  Money, percentages and counts reach the model already formatted
+  (`agent/formatting.present`), so it copies figures instead of writing them;
+  if the prose still carries a money figure the data does not contain
+  verbatim, the paragraph is dropped and the computed blocks stand alone.
   Without `DEEPSEEK_API_KEY` the agent still works end to end.
 
 Every turn stores its trace in `agent_runs` (nodes, tool, arguments,
@@ -50,20 +54,40 @@ duration), so any answer can be audited and replayed. *Skills*
 
 ### It also converses
 
-Questions the database cannot answer — «¿qué es el EBITDA?», «¿cómo funciona
-una stablecoin?», «¿me conviene facturar en dólares?» — are answered in prose
-by `answer_question`, the way a colleague would. It is the only tool that
-computes nothing, and it has two hard limits:
+The agent follows the conversation, not just the last message. The chat hands
+every turn's history to the graph (`agent/conversation.py` trims it to the
+recent turns), and three places read it:
+
+- **The narrator** answers the question that was asked, in the assistant's
+  voice, greets back when greeted, may add one interpretation grounded in the
+  skills' thresholds, and relates the result to the previous turn. A tool that
+  opens with its own answer sentence hands that line to the narrator, so one
+  voice speaks.
+- **`answer_question`** handles conceptual questions («¿qué es el EBITDA?»,
+  «¿cómo funciona una stablecoin?») and reactions to the previous answer
+  («¿por qué?», «¿y eso es bueno?», «explíqueme»), which the router sends there
+  before any data rule. It may quote the figures the panel already showed in
+  the conversation, verbatim, and comment on them.
+- **The planner** sees the recent turns, so a correction («no, con el monto
+  más grande») is planned as the previous request with that change applied.
+
+Two hard limits stay:
 
 - **It stays within finance and crypto.** Outside that it replies in one
   sentence that the topic is not its job and comes back.
-- **It never quotes company figures.** Those live in the database and belong
-  to the data tools; if the question is about the company's own orders or
-  expenses, it points to the panel instead of estimating.
+- **It never produces a figure of its own.** Money, percentages and counts
+  reach the model already formatted; it copies them. A money figure in its
+  prose that the data or the transcript does not contain verbatim is caught by
+  a guard (`agent/formatting.unbacked_figures`): the narrator's paragraph is
+  dropped, the advisor retries once and then declines to estimate. Markdown
+  the model sneaks in is stripped and the narration is cut at three sentences.
 
-The router tells the two families apart before the LLM is involved: a
-conceptual question («¿qué riesgo tiene cobrar en USDT?») is not confused with
-a data question («¿cuánto facturamos en julio?») even when they share words.
+The router tells the families apart before the LLM is involved: a conceptual
+question («¿qué riesgo tiene cobrar en USDT?») is not confused with a data
+question («¿cuánto facturamos en julio?») even when they share words, and a
+ranking question («¿qué cliente factura más?», «la orden más grande de
+agosto») goes to a ranking tool, never to a listing the narrator would have to
+sort by eye.
 
 ### Creating, editing and deleting records from the chat
 
@@ -109,11 +133,12 @@ discarded and read again from the message. Categories, vendors, owners and
 customers are matched against the existing ones so the exact value is reused
 instead of creating variants.
 
-### Tools (26)
+### Tools (29)
 
 | Family | Tools |
 |---|---|
 | Analytics | `get_period_summary`, `get_kpi_dashboard`, `detect_anomalies` |
+| Rankings | `rank_orders` (largest or smallest orders, by USD equivalent), `rank_customers` (by approved amount or by number of orders) |
 | Records | `list_orders`, `list_expenses`, `create_order`, `create_expense`, `update_order`, `update_expense`, `delete_order`, `delete_expense` |
 | Schema | `add_column`, `remove_column`, `list_columns`, `set_cell` |
 | Reports | `generate_chart`, `generate_financial_report`, `generate_invoice`, `generate_receipt`, `list_saved_reports` |

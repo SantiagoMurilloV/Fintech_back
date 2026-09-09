@@ -1,56 +1,80 @@
-"""Conversational answers about finance and crypto.
+"""Conversational answers: finance and crypto, and the conversation itself.
 
 Every other tool computes something from the database. This one talks: it
-takes a question that has no figures to look up — what an EBITDA is, how a
-stablecoin works, whether invoicing in USD makes sense — and answers it in
-plain Spanish, the way a colleague would.
+answers a question that has no figures to look up — what an EBITDA is, how a
+stablecoin works — and it follows the conversation: «¿y eso es bueno?» after a
+monthly summary is answered here, from the figures the panel already showed.
 
 Two limits keep it honest. It stays inside finance and crypto, and it never
-quotes figures about this company: those live in the database and belong to
-the data tools, which is where the user is sent instead of guessing.
+produces a figure of its own: what the panel computed in this conversation it
+may quote verbatim; anything else it sends to the data tools. A guard checks
+every money figure in its answer against the transcript before it is shown.
 """
 from __future__ import annotations
+
+from datetime import date
 
 from sqlalchemy.orm import Session
 
 from ...config import COMPANY_NAME
 from ...services import llm
-from .. import blocks
-from ..registry import ToolResult, tool
+from .. import blocks, conversation, formatting, skills
+from ..registry import ToolResult, all_tools, tool
 
-SYSTEM_PROMPT = f"""Eres el asistente financiero de {COMPANY_NAME}, una empresa B2B.
-Respondes preguntas sobre finanzas, contabilidad, impuestos, tesorería, medios
-de pago, fintech, mercados y cripto.
+SYSTEM_PROMPT = f"""You are the financial assistant of {COMPANY_NAME}, a B2B company, and
+you live inside its financial panel. You answer in Spanish.
 
-Cómo hablas:
-- Como una persona, en español colombiano formal: al usuario lo tratas siempre
-  de «usted» — nunca de «vos» ni de «tú» —, cordial y directo. Nada de
-  markdown, viñetas ni títulos: párrafos cortos, dos o tres como máximo.
-- Si la pregunta es simple, la respuesta es corta. No rellenes.
+How you speak:
+- Like a knowledgeable colleague, in formal Colombian Spanish: always «usted»,
+  never «vos» or «tú». Cordial and direct. No markdown, no bullet points, no
+  headings: short paragraphs, three at most. A simple question gets a short
+  answer.
+- You see the recent conversation. Follow it: a reaction such as «¿por qué?»,
+  «¿eso es bueno?» or «explíqueme» refers to what was just shown. Refer back to
+  it naturally instead of starting over.
 
-También eres el anfitrión del chat:
-- Un saludo, un agradecimiento o una cortesía se responde como lo haría una
-  persona: breve, cálido, y ofreciendo ayuda («¡Hola! ¿En qué le puedo ayudar
-  hoy?»).
-- Si preguntan quién eres o qué sabes hacer: eres el asistente del panel;
-  puedes registrar, editar y eliminar órdenes y gastos, generar facturas y
-  comprobantes en PDF, mostrar análisis y reportes, y responder dudas de
-  finanzas y cripto. Cuéntalo en dos o tres frases, no como catálogo.
-- Si el pedido parece una acción pero le falta información para ejecutarse,
-  di exactamente qué detalle falta y da un ejemplo de cómo pedirlo
-  («registre un gasto de 200 USD en software»). Nunca respondas con un tema
-  distinto al que le pidieron.
+Figures — the one rule that has no exceptions:
+- The figures the panel computed appear in the conversation, already
+  formatted. You may quote them exactly as written and comment on them.
+- You never compute, derive, estimate, round or convert a figure, and you
+  never introduce one that is not in the conversation. Not a sum, not a
+  difference, not a percentage of your own.
+- If the user asks for a figure that is not there, say so and tell them how
+  to ask the panel for it (for example «¿cómo cerró agosto?», «¿qué cliente
+  factura más?», «muéstreme las órdenes rechazadas»). The panel answers from
+  the database.
 
-Límites, sin excepción:
-- Fuera de finanzas y cripto no opinas. Di en una frase que ese tema no te
-  corresponde y ofrece seguir con lo financiero. No inventes rodeos.
-- No tienes aquí los datos de la empresa. Nunca cites cifras suyas ni las
-  estimes: si la pregunta es sobre sus órdenes, gastos, ingresos o resultados,
-  indícale que se los pida al panel (por ejemplo «muéstreme los gastos de
-  julio» o «¿cómo cerró el mes?»), que ahí salen del sistema.
-- No des recomendaciones de inversión personalizadas ni prometas rendimientos.
-  Explica cómo funciona, para qué sirve y qué riesgos tiene, y deja la decisión
-  del lado del usuario."""
+What you know about the panel — use it to interpret, never to invent:
+{{criteria}}
+Mention these criteria only when the conversation is about alerts, anomalies
+or risk, or the user asks for an assessment. Never claim that an alert fired
+unless the conversation shows it. A «¿por qué?» after a result is answered
+from that result: say what the data shows and what would need checking, and
+distinguish what you know from what you suppose.
+
+What the user can ask the panel to do (suggest these when they fit):
+{{capabilities}}
+
+You are also the host of the chat:
+- A greeting, a thank-you or a courtesy gets a brief, warm human reply and an
+  offer to help.
+- Asked who you are or what you can do: you are the panel's assistant; you
+  can record, edit and delete orders and expenses, generate invoices and
+  receipts as PDF, show analyses, rankings and reports, and answer finance and
+  crypto questions. Two or three sentences, not a catalogue.
+- If the message looks like an action but lacks a detail, name the missing
+  detail and give an example of how to ask («registre un gasto de 200 USD en
+  software»). Never answer a different topic than the one asked.
+
+Limits, without exception:
+- Outside finance, accounting, payments, fintech, markets and crypto you do
+  not opine. Say in one sentence that it is not your job and offer to go on
+  with the financial side. No detours.
+- No personalised investment advice and no promised returns. Explain how
+  something works, what it is for and what its risks are; the decision stays
+  with the user.
+
+Today is {{today}}. The user is looking at: {{view}}."""
 
 UNAVAILABLE = (
     "Para conversar necesito el modelo configurado (DEEPSEEK_API_KEY en el backend). "
@@ -58,16 +82,38 @@ UNAVAILABLE = (
     "«gastos sin comprobante» o «muéstreme las órdenes rechazadas»."
 )
 
+NO_SUCH_FIGURE = (
+    "Esa cifra no la tengo calculada en esta conversación, y no la voy a estimar. "
+    "Pídasela al panel: por ejemplo «¿cómo cerró el mes?», «¿qué cliente factura más?» "
+    "o «muéstreme las órdenes rechazadas», y ahí sale de la base."
+)
+
+
+def _capabilities() -> str:
+    lines = []
+    for registered in all_tools():
+        if registered.examples and registered.name != "answer_question":
+            lines.append(f"- {registered.examples[0]}")
+    return "\n".join(lines)
+
+
+def _system(view: str | None) -> str:
+    return (SYSTEM_PROMPT
+            .replace("{criteria}", skills.content(sorted(skills.SKILLS)) or "(none)")
+            .replace("{capabilities}", _capabilities())
+            .replace("{today}", date.today().isoformat())
+            .replace("{view}", view or "el chat del agente"))
+
 
 @tool(
     name="answer_question",
-    description="Responde en lenguaje natural una pregunta conceptual de finanzas, "
-                "contabilidad, impuestos, pagos, fintech, mercados o cripto que no "
-                "necesita datos de la empresa: «¿qué es el EBITDA?», «¿cómo funciona "
-                "una stablecoin?», «¿qué diferencia hay entre margen bruto y neto?», "
-                "«¿conviene facturar en USD?». NO la uses si la pregunta es sobre las "
-                "órdenes, los gastos, los ingresos o los reportes de esta empresa: "
-                "para eso están las herramientas de datos, que leen la base.",
+    description="Conversa: responde una pregunta conceptual de finanzas, contabilidad, "
+                "impuestos, pagos, fintech, mercados o cripto («¿qué es el EBITDA?», «¿cómo "
+                "funciona una stablecoin?»), o una reacción a la respuesta anterior («¿por "
+                "qué?», «¿eso es bueno?», «explícame»), usando solo las cifras que el panel ya "
+                "mostró en la conversación. NO la uses para pedir datos nuevos de las órdenes, "
+                "los gastos o los reportes de esta empresa: para eso están las herramientas de "
+                "datos, que leen la base.",
     parameters={
         "type": "object",
         "properties": {
@@ -75,24 +121,42 @@ UNAVAILABLE = (
         },
         "required": [],
     },
-    examples=["¿Qué es el EBITDA?", "¿Cómo funciona una stablecoin?",
-              "¿Qué diferencia hay entre margen bruto y neto?"],
+    examples=["¿Qué es el EBITDA?", "¿Cómo funciona una stablecoin?", "¿Y eso es bueno?"],
+    conversational=True,
 )
-def answer_question(db: Session, question: str = "") -> ToolResult:
-    """Answer a finance or crypto question in prose."""
+def answer_question(db: Session, question: str = "", history: list[dict] | None = None,
+                    view: str | None = None) -> ToolResult:
+    """Answer in prose, grounded in the conversation so far."""
     asked = (question or "").strip()
     if not asked:
         return ToolResult(
             blocks=[blocks.notice("¿Sobre qué tema financiero le gustaría saber?", "info")],
             summary="Pregunta vacía.")
 
-    answer = llm.complete(SYSTEM_PROMPT, asked, temperature=0.4, max_tokens=600,
-                          caller="advisor")
+    turns = conversation.recent_turns(history)
+    messages = [*turns, {"role": "user", "content": asked}]
+    answer = llm.chat(_system(view), messages, temperature=0.3, max_tokens=600, caller="advisor")
+    answer = formatting.strip_markdown(answer) if answer else answer
     if not answer:
         return ToolResult(
             blocks=[blocks.notice(UNAVAILABLE, tone="info")],
             summary="Modelo no disponible para conversar.")
 
-    # No `data`: the narrator adds a paragraph only when a tool produced
-    # figures, and this answer is already the prose.
+    # Every money figure in the answer must already be in the transcript.
+    backing = conversation.transcript(history) + "\n" + asked
+    unbacked = formatting.unbacked_figures(answer, backing)
+    if unbacked:
+        retry = llm.chat(
+            _system(view) + "\n\nYour previous draft used figures that are not in the "
+            f"conversation ({', '.join(unbacked)}). Answer again without any figure that "
+            "the conversation does not contain verbatim.",
+            messages, temperature=0.2, max_tokens=600, caller="advisor")
+        answer = formatting.strip_markdown(retry) if retry else ""
+        unbacked = formatting.unbacked_figures(answer, backing) if answer else ["(sin respuesta)"]
+    if unbacked:
+        return ToolResult(blocks=[blocks.notice(NO_SUCH_FIGURE, tone="warning")],
+                          data={}, summary="Cifra no respaldada; respuesta retenida.")
+
+    # No `data`: the narrator adds prose only when a tool produced figures, and
+    # this answer is already the prose.
     return ToolResult(blocks=[blocks.text(answer)], summary="Respuesta conversacional.")
