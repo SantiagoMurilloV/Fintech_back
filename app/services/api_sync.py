@@ -497,25 +497,40 @@ def source_fields(db: Session, entity: str) -> dict[str, str]:
     return fields
 
 
-def _resolve_currency(raw, fallback_currency: str, note) -> str:
-    """Normalise a feed currency and leave a note on anything the USD totals
-    will treat specially: a fallback, an alias, a peg or a missing rate."""
+def _collectors(result: dict):
+    """Two lists in the report, deduplicated: `problems` is what needs a
+    person (a substitution, a gap in the totals, an unknown state);
+    `notes` records a criterion applied on purpose, so nothing is silent."""
+    def note(problem: str):
+        if problem not in result["problems"]:
+            result["problems"].append(problem)
+
+    def remark(text: str):
+        if text not in result["notes"]:
+            result["notes"].append(text)
+
+    return note, remark
+
+
+def _resolve_currency(raw, fallback_currency: str, note, remark) -> str:
+    """Normalise a feed currency and report anything the USD totals will
+    treat specially: a fallback, an alias, a peg or a missing rate."""
     currency, ok = mapping.to_currency(raw, fallback_currency)
     if not ok:
         note(f"Moneda no reconocida en algunas filas; usé {fallback_currency}.")
     original = str(raw or "").strip().upper()
     if ok and original and original != currency:
-        note(f"Moneda «{original}» normalizada a {currency}: es el mismo activo.")
+        remark(f"Moneda «{original}» normalizada a {currency}: es el mismo activo.")
     rate = finance.usd_rate(currency)
     if rate is None:
         note(f"Sin tasa USD para {currency}: esas filas guardan su monto exacto "
              "pero no suman en los totales USD.")
     elif finance.is_stablecoin(currency):
         if rate == 1.0:
-            note(f"{currency} contabilizado a la par: 1 {currency} = 1 USD en los totales.")
+            remark(f"{currency} contabilizado a la par: 1 {currency} = 1 USD en los totales.")
         else:
             shown = f"{rate:.4f}".replace(".", ",")
-            note(f"{currency} contabilizado a {shown} USD por unidad en los totales.")
+            remark(f"{currency} contabilizado a {shown} USD por unidad en los totales.")
     return currency
 
 
@@ -564,7 +579,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
     records, fetched = _fetch_list(base_url, token, path, scheme)
     slug = path_slug(path)
     result = {"path": path, "received": len(records), "pages": fetched["pages"],
-              "imported": 0, "updated": 0, "skipped": 0, "problems": []}
+              "imported": 0, "updated": 0, "skipped": 0, "problems": [], "notes": []}
     if fetched["truncated"]:
         result["problems"].append(
             f"La fuente declara {fetched['source_count']} registros; traje los "
@@ -577,9 +592,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
     result["mapping"] = field_map
     result["mapping_decided_by"] = decided_by
 
-    def note(problem: str):
-        if problem not in result["problems"]:
-            result["problems"].append(problem)
+    note, remark = _collectors(result)
 
     if "amount" not in field_map:
         note(f"Ningún campo parece un monto (vi: {', '.join(fields)}). "
@@ -591,7 +604,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
     result["extra_columns"] = sorted(column.key for column in extra_columns.values())
 
     expected: dict[str, tuple[float, str]] = {}
-    unknown_statuses: set[str] = set()
+    unknown_statuses: dict[str, int] = {}
     for index, record in enumerate(records):
         external = record.get(field_map.get("external_id", ""), index)
         amount = mapping.to_amount(record.get(field_map["amount"]))
@@ -601,7 +614,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
             continue
 
         currency = _resolve_currency(
-            record.get(field_map.get("currency", "")), fallback_currency, note)
+            record.get(field_map.get("currency", "")), fallback_currency, note, remark)
         source_status = str(record.get(field_map.get("status", ""), "") or "").strip()
         status = mapping.to_status(source_status)
         if status is None:
@@ -609,12 +622,13 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
                 # A lifecycle word we do not know is not revenue: it waits as
                 # pending, is named in the report and keeps its exact text.
                 status = "pending"
-                unknown_statuses.add(source_status or "(vacío)")
+                word = source_status or "(vacío)"
+                unknown_statuses[word] = unknown_statuses.get(word, 0) + 1
             else:
                 # A feed without a status column is a ledger of settled
                 # transactions; the report says so instead of assuming quietly.
                 status = "approved"
-                note("El feed no trae estado: las importé como aprobadas.")
+                remark("El feed no trae estado: las importé como aprobadas.")
         day = mapping.to_date(record.get(field_map.get("date", ""))) or mapping.today()
         customer = str(record.get(field_map.get("customer", ""), "") or "").strip() \
             or f"Cliente externo {external}"
@@ -643,9 +657,11 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
             result["updated"] += 1
 
     if unknown_statuses:
-        listed = ", ".join(f"«{value}»" for value in sorted(unknown_statuses))
-        note(f"Estados no reconocidos ({listed}): quedaron como pendientes y "
-             "conservan su texto original en la tabla.")
+        listed = ", ".join(
+            f"«{value}» ({count} {'orden' if count == 1 else 'órdenes'})"
+            for value, count in sorted(unknown_statuses.items()))
+        note(f"Estados no reconocidos: {listed}. Quedaron como pendientes, fuera del "
+             "ingreso, con su texto original en la tabla. Confirme con la fuente qué significan.")
     db.commit()
     result["verification"] = _verify(db, "orders", expected)
     if not result["verification"]["exact"]:
@@ -660,7 +676,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
     records, fetched = _fetch_list(base_url, token, path, scheme)
     slug = path_slug(path)
     result = {"path": path, "received": len(records), "pages": fetched["pages"],
-              "imported": 0, "updated": 0, "skipped": 0, "problems": []}
+              "imported": 0, "updated": 0, "skipped": 0, "problems": [], "notes": []}
     if fetched["truncated"]:
         result["problems"].append(
             f"La fuente declara {fetched['source_count']} registros; traje los "
@@ -673,9 +689,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
     result["mapping"] = field_map
     result["mapping_decided_by"] = decided_by
 
-    def note(problem: str):
-        if problem not in result["problems"]:
-            result["problems"].append(problem)
+    note, remark = _collectors(result)
 
     if "amount" not in field_map or "description" not in field_map:
         missing = [name for name in ("amount", "description") if name not in field_map]
@@ -698,7 +712,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
             continue
 
         currency = _resolve_currency(
-            record.get(field_map.get("currency", "")), fallback_currency, note)
+            record.get(field_map.get("currency", "")), fallback_currency, note, remark)
         day = mapping.to_date(record.get(field_map.get("date", "")))
         if day is None:
             day = mapping.today()

@@ -183,8 +183,11 @@ the direction is not paused) brings orders and expenses from the endpoint:
 - It is **idempotent**: every record stores its external id, so re-syncing
   updates instead of duplicating.
 - The **report** of each run stays in Settings: received, new, updated,
-  skipped, the mapping applied and the problems (a row without an amount is
-  not imported; it is counted and explained).
+  skipped, the mapping applied, and two separate lists. `notes` are criteria
+  applied on purpose (a stablecoin counted at par, an alias unified) — worth
+  knowing, nothing to fix. `problems` need a person: a row without an amount
+  is not imported and is counted and explained; an unknown status word is
+  named with how many rows carry it; a currency without a rate is declared.
 
 The inspectors («Probar») exist to look at the contract before syncing.
 Values live in the `settings` table (one per row; a new option is a line in
