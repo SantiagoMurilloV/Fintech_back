@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import CURRENCIES, GATEWAYS, ORDER_STATUSES, CustomColumn, Order
 from ..services import columns as columns_service
-from ..services import finance
+from ..services import api_sync, finance, order_search
 from ..services import records as records_service
 from .auth import AuthDep
 
@@ -25,10 +25,30 @@ def order_view(o: Order, custom: list[CustomColumn] | None = None) -> dict:
         "id": o.id, "customer": o.customer, "amount": o.amount, "currency": o.currency,
         "status": o.status, "gateway": o.gateway, "date": o.date,
         "usd_eq": round(finance.usd_eq(o.amount, o.currency), 2),
+        # The feed's own wording for the state, when the row came from a sync.
+        "source_status": (o.extra or {}).get("source_status"),
     }
     # Values for user-defined columns, including recomputed formulas.
     payload["extra"] = columns_service.apply_to_row(payload, custom or [], o.extra)
     return payload
+
+
+# Base columns a source may legitimately lack; the table hides them while no
+# row fills them, rather than showing a column of dashes the data never had.
+OPTIONAL_FIELDS = ("gateway",)
+
+
+def _empty_fields(db: Session) -> list[str]:
+    """Optional base fields with no value in any order."""
+    if not db.scalar(select(func.count(Order.id))):
+        return []
+    empty = []
+    for name in OPTIONAL_FIELDS:
+        column = getattr(Order, name)
+        filled = db.scalar(select(func.count(Order.id)).where(column.is_not(None), column != ""))
+        if not filled:
+            empty.append(name)
+    return empty
 
 
 class OrderBody(BaseModel):
@@ -40,28 +60,49 @@ class OrderBody(BaseModel):
     date: str
 
 
+def _search(db: Session, custom: list[CustomColumn], q, status, filters,
+            date_from, date_to) -> order_search.Search:
+    try:
+        return order_search.Search(custom, q=q, status=status, filters=filters,
+                                   date_from=date_from, date_to=date_to)
+    except order_search.SearchError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from None
+
+
 @router.get("/api/orders")
-def list_orders(status: str | None = None, limit: int = 25, offset: int = 0,
-                db: Session = Depends(get_db)):
+def list_orders(status: str | None = None, q: str | None = None, filters: str | None = None,
+                date_from: str | None = None, date_to: str | None = None,
+                limit: int = 25, offset: int = 0, db: Session = Depends(get_db)):
+    """One page of orders plus everything the table needs to filter them.
+
+    `q` searches every field of the row; `filters` is a JSON object
+    {column: value | [values]} over base or feed columns; `facets` in the
+    response lists, per column, the values that exist and how many rows each
+    one would give.
+    """
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
-    query = select(Order)
-    count_query = select(func.count(Order.id))
-    if status in ORDER_STATUSES:
-        query = query.where(Order.status == status)
-        count_query = count_query.where(Order.status == status)
-    total = db.scalar(count_query)
-    items = db.scalars(
-        query.order_by(Order.date.desc(), Order.id.desc()).limit(limit).offset(offset)
-    ).all()
     custom = columns_service.list_columns(db, "orders")
+    search = _search(db, custom, q, status, filters, date_from, date_to)
+    where = search.where()
+    total = db.scalar(select(func.count(Order.id)).where(*where))
+    items = db.scalars(
+        select(Order).where(*where)
+        .order_by(Order.date.desc(), Order.id.desc()).limit(limit).offset(offset)
+    ).all()
     return {
         "items": [order_view(o, custom) for o in items],
         "total": total, "limit": limit, "offset": offset,
+        "filtered": search.active,
+        "facets": search.facets(db),
         "period": finance.current_period(db),
         # Catalogs so the frontend can build filters/forms without hardcoding.
         "statuses": ORDER_STATUSES, "gateways": GATEWAYS, "currencies": CURRENCIES,
         "columns": [columns_service.column_view(column) for column in custom],
+        # Where each base column came from, and which ones the data never
+        # fills: the table adapts to the feed, not the feed to the table.
+        "source_fields": api_sync.source_fields(db, "orders"),
+        "empty_fields": _empty_fields(db),
     }
 
 
@@ -110,21 +151,34 @@ def update_order(order_id: str, body: OrderPatch, db: Session = Depends(get_db))
             db, order, body.model_dump(exclude_unset=True), "orders")
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from None
+    if "status" in applied and isinstance(order.extra, dict) and "source_status" in order.extra:
+        # A state chosen by hand supersedes the feed's wording for it.
+        order.extra = {k: v for k, v in order.extra.items() if k != "source_status"}
+        db.commit()
 
     return {"item": order_view(order, columns_service.list_columns(db, "orders")),
             "changed": list(applied)}
 
 
 @router.get("/api/orders/export.csv")
-def export_csv(db: Session = Depends(get_db)):
-    """CSV is a data export, so it lives in the backend."""
-    rows = db.scalars(select(Order).order_by(Order.date.desc(), Order.id.desc())).all()
+def export_csv(status: str | None = None, q: str | None = None, filters: str | None = None,
+               date_from: str | None = None, date_to: str | None = None,
+               db: Session = Depends(get_db)):
+    """CSV is a data export, so it lives in the backend. It honours the same
+    search and filters as the table: what is exported is what is on screen."""
+    custom = columns_service.list_columns(db, "orders")
+    search = _search(db, custom, q, status, filters, date_from, date_to)
+    rows = db.scalars(select(Order).where(*search.where())
+                      .order_by(Order.date.desc(), Order.id.desc())).all()
     buf = io.StringIO()
-    buf.write("id,customer,amount,currency,status,gateway,date\n")
+    buf.write("id,customer,amount,currency,status,source_status,gateway,date\n")
     for o in rows:
         customer = f'"{o.customer}"' if "," in o.customer else o.customer
+        source_status = (o.extra or {}).get("source_status") or ""
+        source_status = f'"{source_status}"' if "," in source_status else source_status
         gateway = f'"{o.gateway}"' if o.gateway and "," in o.gateway else (o.gateway or "")
-        buf.write(f"{o.id},{customer},{o.amount},{o.currency},{o.status},{gateway},{o.date}\n")
+        buf.write(f"{o.id},{customer},{o.amount},{o.currency},{o.status},{source_status},"
+                  f"{gateway},{o.date}\n")
     return StreamingResponse(
         iter([buf.getvalue()]), media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="orders.csv"'},

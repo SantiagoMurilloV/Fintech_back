@@ -481,6 +481,22 @@ def wipe(db: Session, scope: str) -> dict:
     return removed
 
 
+def source_fields(db: Session, entity: str) -> dict[str, str]:
+    """Our field -> feed field, as decided in the last pull for this entity.
+
+    Lets a table say where each base column came from («Cliente ← legal_name»)
+    instead of presenting the feed's data under names it never used.
+    """
+    report = settings_service.last_report(db) or {}
+    fields: dict[str, str] = {}
+    for name, entry in (report.get("entities") or {}).items():
+        if name.split(":")[0].rstrip("·") != entity:
+            continue
+        for ours, theirs in (entry.get("mapping") or {}).items():
+            fields.setdefault(ours, theirs)
+    return fields
+
+
 def _resolve_currency(raw, fallback_currency: str, note) -> str:
     """Normalise a feed currency and leave a note on anything the USD totals
     will treat specially: a fallback, an alias, a peg or a missing rate."""
@@ -575,6 +591,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
     result["extra_columns"] = sorted(column.key for column in extra_columns.values())
 
     expected: dict[str, tuple[float, str]] = {}
+    unknown_statuses: set[str] = set()
     for index, record in enumerate(records):
         external = record.get(field_map.get("external_id", ""), index)
         amount = mapping.to_amount(record.get(field_map["amount"]))
@@ -585,13 +602,19 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
 
         currency = _resolve_currency(
             record.get(field_map.get("currency", "")), fallback_currency, note)
-        status = mapping.to_status(record.get(field_map.get("status", "")))
+        source_status = str(record.get(field_map.get("status", ""), "") or "").strip()
+        status = mapping.to_status(source_status)
         if status is None:
-            # A feed of settled transactions is the norm; saying so beats hiding
-            # revenue behind "pending".
-            status = "approved"
             if field_map.get("status"):
-                note("Estados no reconocidos: los importé como aprobadas.")
+                # A lifecycle word we do not know is not revenue: it waits as
+                # pending, is named in the report and keeps its exact text.
+                status = "pending"
+                unknown_statuses.add(source_status or "(vacío)")
+            else:
+                # A feed without a status column is a ledger of settled
+                # transactions; the report says so instead of assuming quietly.
+                status = "approved"
+                note("El feed no trae estado: las importé como aprobadas.")
         day = mapping.to_date(record.get(field_map.get("date", ""))) or mapping.today()
         customer = str(record.get(field_map.get("customer", ""), "") or "").strip() \
             or f"Cliente externo {external}"
@@ -604,6 +627,10 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
                        gateway=str(record.get(field_map.get("gateway", ""), "") or "")[:30] or None)
         expected[key] = (amount, currency)
         extra = {"source": "api", "external_key": key, "_raw": _raw(record)}
+        if field_map.get("status"):
+            # The feed's own words for the state. The table shows them; `status`
+            # stays the category behind filters and totals.
+            extra["source_status"] = source_status or None
         for field, column in extra_columns.items():
             extra[column.key] = _typed_value(record.get(field), column.data_type)
         if existing is None:
@@ -615,6 +642,10 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
             existing.extra = {**(existing.extra or {}), **extra}
             result["updated"] += 1
 
+    if unknown_statuses:
+        listed = ", ".join(f"«{value}»" for value in sorted(unknown_statuses))
+        note(f"Estados no reconocidos ({listed}): quedaron como pendientes y "
+             "conservan su texto original en la tabla.")
     db.commit()
     result["verification"] = _verify(db, "orders", expected)
     if not result["verification"]["exact"]:

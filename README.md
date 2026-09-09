@@ -164,6 +164,13 @@ the direction is not paused) brings orders and expenses from the endpoint:
   1 by default — and the report says so. A currency without a configured rate
   keeps its exact amount but **adds zero to USD totals** — an invented rate is
   worse than an explicit gap, and the report says that too.
+- **The table follows the data, not a template**: the feed's own status text
+  («Rejected signature to middleware») is kept on the row and shown in the
+  table; our four codes only colour the badge, drive the filters and the
+  totals. A status word the mapping does not know waits as `pending` — never
+  as revenue — and the report names it. Each base column shows the source
+  field it came from (`Cliente ← legal_name`), and an optional column no row
+  fills (`gateway`, for a feed without one) is hidden instead of showing dashes.
 - **Tables are dynamic**: every feed field that does not map to a base column
   becomes a visible column under its original name, created automatically and
   **typed from its values**: `"52.090000000"` is stored as a number,
@@ -499,10 +506,10 @@ Railway: receipts go to Cloudinary.
 | `GET/POST/PATCH/DELETE` | `/api/users…` | User management (admin only) |
 | `GET/PUT` | `/api/settings` · `POST /api/settings/probe/{api,sheets}` | Settings and inspectors (save/probe: admin) |
 | `POST` | `/api/settings/sync/pull` | Run one pull now |
-| `GET` | `/api/orders?status&limit&offset` | Orders + catalogs (`statuses`, `gateways`, `currencies`, `columns`) |
+| `GET` | `/api/orders?status&q&filters&date_from&date_to&limit&offset` | Orders + catalogs (`statuses`, `gateways`, `currencies`, `columns`), `source_fields`, `empty_fields` and `facets`. `q` searches every field of the row (base columns, feed columns, the raw record); `filters` is a JSON object `{column: value \| [values]}` over base or feed columns; each facet lists a column's existing values with counts |
 | `POST` | `/api/orders` | Created order |
 | `PATCH` | `/api/orders/{id}` · `/api/expenses/{id}` | Partial edit (editable table) |
-| `GET` | `/api/orders/export.csv` | CSV |
+| `GET` | `/api/orders/export.csv` | CSV of the rows the same `status`, `q`, `filters` and date range select |
 | `GET` | `/api/expenses` | Expenses + numeric `stats` + `cloudinary` flag |
 | `POST` | `/api/expenses` · `/api/expenses/{id}/receipt` | Expense / upload to Cloudinary |
 | `GET` | `/api/reports?period` | Month aggregates + `deltas` |
