@@ -21,8 +21,9 @@ from ..models import ORDER_STATUSES, CustomColumn, Order
 # search box is the right tool for it.
 FACET_MAX_VALUES = 40
 
-# Base columns that may become filters (status already has its own chips).
-BASE_FACETS = ("currency", "gateway", "customer")
+# Base columns that may become filters. Status is one more facet: its values
+# are our category codes, counted like any other column.
+BASE_FACETS = ("status", "currency", "gateway", "customer")
 # Values the sync keeps in `extra` without a user column, still worth filtering.
 EXTRA_FACETS = ("source_status",)
 # User columns become filters by their data type; numbers and dates are not
