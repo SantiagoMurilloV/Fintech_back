@@ -33,6 +33,8 @@ GATEWAY_WORDS = {"wompi": "Wompi", "epayco": "ePayco", "bold": "Bold", "stripe":
 
 # Currency markers, least ambiguous first: a bare "pesos" means COP.
 CURRENCY_WORDS = [
+    (r"\b(?:usdt|tether)\b", "USDT"),
+    (r"\b(?:usdc|usd\s+coin)\b", "USDC"),
     (r"\b(?:usd|us\$|dolar(?:es)?|dls)\b", "USD"),
     (r"\b(?:mxn|mx\$|pesos?\s+mexicanos?)\b", "MXN"),
     (r"\b(?:cop|pesos?\s+colombianos?|pesos?)\b", "COP"),
@@ -99,7 +101,7 @@ _NUMBER = r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?"
 _AMOUNT_RE = re.compile(
     rf"(?<![\w])(?P<symbol>us\$|mx\$|\$)?\s*(?P<number>{_NUMBER})\s*"
     rf"(?P<mult>millones|millon|palos|palo|mm|miles|mil|k)?\s*"
-    rf"(?P<currency>usd|cop|mxn|dolares|dolar|pesos|peso)?"
+    rf"(?P<currency>usdt|usdc|tether|usd|cop|mxn|dolares|dolar|pesos|peso)?"
 )
 
 # Digits that are never an amount: dates, periods, record ids, percentages.

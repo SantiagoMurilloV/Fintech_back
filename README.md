@@ -158,9 +158,12 @@ the direction is not paused) brings orders and expenses from the endpoint:
   (`source 4651.2921 · stored 4651.2921 · exact: true`); any difference is
   declared a failure. With money there is no "close enough".
 - **Currencies and crypto**: the currency code is stored exactly as it arrives
-  (USD, COP, USDT, WBTC…). Without a configured USD rate those rows keep their
-  exact amount but **add zero to USD totals** — an invented rate is worse than
-  an explicit gap, and the report says so.
+  (USD, COP, USDT, WBTC…); only a known alias of a standard code is unified
+  (`TETHER` → `USDT`, the same asset). Dollar-pegged stablecoins (USDT, USDC)
+  count in USD totals at their peg — `FX_USDT_PER_USD` / `FX_USDC_PER_USD`,
+  1 by default — and the report says so. A currency without a configured rate
+  keeps its exact amount but **adds zero to USD totals** — an invented rate is
+  worse than an explicit gap, and the report says that too.
 - **Tables are dynamic**: every feed field that does not map to a base column
   becomes a visible column under its original name, created automatically and
   **typed from its values**: `"52.090000000"` is stored as a number,

@@ -11,7 +11,7 @@ from datetime import date as _date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..config import FX_TO_USD
+from ..config import FX_TO_USD, STABLECOINS
 from ..models import ORDER_STATUSES, Expense, Order
 
 
@@ -20,14 +20,26 @@ def has_rate(currency: str | None) -> bool:
     return (currency or "USD").upper() in FX_TO_USD
 
 
+def usd_rate(currency: str | None) -> float | None:
+    """USD value of one unit of the currency, or None without a configured rate."""
+    return FX_TO_USD.get((currency or "USD").upper())
+
+
+def is_stablecoin(currency: str | None) -> bool:
+    """Whether the currency is a dollar-pegged stablecoin counted at its peg."""
+    return (currency or "").upper() in STABLECOINS
+
+
 def usd_eq(amount: float, currency: str | None) -> float:
     """Convert an amount to its USD equivalent using configured FX rates.
 
-    A currency without a configured rate (a crypto token, an exotic code)
+    A currency without a configured rate (a volatile token, an exotic code)
     contributes ZERO to USD aggregates instead of being counted 1:1 — with
-    money, a made-up exchange rate is worse than an explicit gap. The record
-    itself keeps its exact amount and currency; only the equivalence is
-    declined. Callers can single those rows out with `has_rate`.
+    money, a made-up exchange rate is worse than an explicit gap. Dollar-pegged
+    stablecoins (USDT, USDC) do have a rate: their peg, configurable in
+    config.FX_TO_USD. A record without a rate keeps its exact amount and
+    currency; only the equivalence is declined. Callers can single those rows
+    out with `has_rate`.
     """
     code = (currency or "USD").upper()
     rate = FX_TO_USD.get(code)

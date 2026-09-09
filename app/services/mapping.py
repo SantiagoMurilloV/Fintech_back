@@ -125,11 +125,17 @@ def to_status(value) -> str | None:
     return _STATUS_LOOKUP.get(str(value or "").strip().lower())
 
 
+# Feed spellings that name the same asset as a standard code. The record
+# stores the standard code; the original spelling survives in `extra._raw`.
+CURRENCY_ALIASES = {"TETHER": "USDT"}
+
+
 def to_currency(value, fallback: str) -> tuple[str, bool]:
     """Returns (currency, was recognised).
 
-    Any plausible code — fiat or crypto (USDT, WBTC) — is kept VERBATIM: the
-    record must store exactly the currency it arrived with. Whether a USD
+    Any plausible code — fiat or crypto (USDT, WBTC) — is kept VERBATIM, except
+    a known alias of a standard code (TETHER → USDT): that is the same asset
+    under a second spelling, and one asset gets one code. Whether a USD
     conversion exists for it is a separate question (finance.has_rate);
     without a rate the record still exists, it just adds zero to USD totals
     instead of being converted with an invented rate.
@@ -137,6 +143,7 @@ def to_currency(value, fallback: str) -> tuple[str, bool]:
     code = str(value or "").strip().upper()
     if not code:
         return fallback, True
+    code = CURRENCY_ALIASES.get(code, code)
     if re.fullmatch(r"[A-Z0-9]{2,8}", code):
         return code, True
     return fallback, False

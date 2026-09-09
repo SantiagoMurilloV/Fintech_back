@@ -481,6 +481,28 @@ def wipe(db: Session, scope: str) -> dict:
     return removed
 
 
+def _resolve_currency(raw, fallback_currency: str, note) -> str:
+    """Normalise a feed currency and leave a note on anything the USD totals
+    will treat specially: a fallback, an alias, a peg or a missing rate."""
+    currency, ok = mapping.to_currency(raw, fallback_currency)
+    if not ok:
+        note(f"Moneda no reconocida en algunas filas; usé {fallback_currency}.")
+    original = str(raw or "").strip().upper()
+    if ok and original and original != currency:
+        note(f"Moneda «{original}» normalizada a {currency}: es el mismo activo.")
+    rate = finance.usd_rate(currency)
+    if rate is None:
+        note(f"Sin tasa USD para {currency}: esas filas guardan su monto exacto "
+             "pero no suman en los totales USD.")
+    elif finance.is_stablecoin(currency):
+        if rate == 1.0:
+            note(f"{currency} contabilizado a la par: 1 {currency} = 1 USD en los totales.")
+        else:
+            shown = f"{rate:.4f}".replace(".", ",")
+            note(f"{currency} contabilizado a {shown} USD por unidad en los totales.")
+    return currency
+
+
 def _existing_expenses(db: Session) -> dict[str, Expense]:
     rows = db.scalars(select(Expense)).all()
     return {row.extra["external_key"]: row
@@ -561,13 +583,8 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
             note("Algunas filas no tienen un monto usable.")
             continue
 
-        currency, ok = mapping.to_currency(
-            record.get(field_map.get("currency", "")), fallback_currency)
-        if not ok:
-            note(f"Moneda no reconocida en algunas filas; usé {fallback_currency}.")
-        if not finance.has_rate(currency):
-            note(f"Sin tasa USD para {currency}: esas filas guardan su monto exacto "
-                 "pero no suman en los totales USD.")
+        currency = _resolve_currency(
+            record.get(field_map.get("currency", "")), fallback_currency, note)
         status = mapping.to_status(record.get(field_map.get("status", "")))
         if status is None:
             # A feed of settled transactions is the norm; saying so beats hiding
@@ -649,13 +666,8 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
             note("Algunas filas no tienen monto o concepto usables.")
             continue
 
-        currency, ok = mapping.to_currency(
-            record.get(field_map.get("currency", "")), fallback_currency)
-        if not ok:
-            note(f"Moneda no reconocida en algunas filas; usé {fallback_currency}.")
-        if not finance.has_rate(currency):
-            note(f"Sin tasa USD para {currency}: esas filas guardan su monto exacto "
-                 "pero no suman en los totales USD.")
+        currency = _resolve_currency(
+            record.get(field_map.get("currency", "")), fallback_currency, note)
         day = mapping.to_date(record.get(field_map.get("date", "")))
         if day is None:
             day = mapping.today()

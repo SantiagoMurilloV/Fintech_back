@@ -13,7 +13,7 @@ from .database import Base
 # Order status codes; the frontend maps them to display labels.
 ORDER_STATUSES = ["approved", "pending", "rejected", "refunded"]
 GATEWAYS = ["Wompi", "ePayco", "Bold", "Stripe (USD)"]
-CURRENCIES = ["USD", "COP", "MXN"]
+CURRENCIES = ["USD", "COP", "MXN", "USDT", "USDC"]
 
 # Roles are job titles, not permission tiers: everyone works with the whole
 # panel the same way. The only role that carries authority is `admin`, which

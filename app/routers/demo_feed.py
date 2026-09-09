@@ -95,7 +95,7 @@ def _payin(index: int) -> dict:
 
 
 def _payout(index: int) -> dict:
-    stable = index % 5 == 0  # a few stay in USDT: shows the "sin tasa USD" note
+    stable = index % 5 == 0  # a few stay in USDT: exercises the stablecoin-at-par note
     amount = 250 + (index * 977) % 9_500
     return {
         "pid": _pid("payouts", index),

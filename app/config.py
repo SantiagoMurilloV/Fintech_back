@@ -82,11 +82,19 @@ EXTERNAL_API_AUTH_SCHEME = os.getenv("EXTERNAL_API_AUTH_SCHEME", "bearer").strip
 DEMO_FEED_KEY = os.getenv("DEMO_FEED_KEY", "demo.mandioca-feed")
 
 # --- FX rates for USD-equivalent consolidation ---
+# Dollar-pegged stablecoins are booked at par (1 USDT = 1 USD), the accounting
+# convention for them. Mandioca settles its payouts in USDT/USDC, so leaving
+# them without a rate would blind every USD total. The peg stays an explicit,
+# configurable rate rather than a hard-coded truth.
 FX_TO_USD = {
     "USD": 1.0,
     "COP": 1.0 / float(os.getenv("FX_COP_PER_USD", "4000")),
     "MXN": 1.0 / float(os.getenv("FX_MXN_PER_USD", "18")),
+    "USDT": 1.0 / float(os.getenv("FX_USDT_PER_USD", "1")),
+    "USDC": 1.0 / float(os.getenv("FX_USDC_PER_USD", "1")),
 }
+# Currencies whose USD rate is a peg assumption; sync reports say so.
+STABLECOINS = ("USDT", "USDC")
 
 # --- Public base URL, used to build links to locally stored files ---
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
