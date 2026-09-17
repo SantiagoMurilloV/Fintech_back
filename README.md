@@ -160,8 +160,59 @@ administrator saves** data sources. Four blocks:
   account (which must be shared with the sheet as editor) and the orders and
   expenses tabs. Its **Probar** verifies access and lists the columns and
   sample rows of each tab.
+- **Integrations** — external systems connected with one click. Today:
+  QuickBooks Online (see below).
 - **Sync** — both directions pause independently: pulling from the sheet and
   writing to it are separate switches, plus the polling interval.
+
+### QuickBooks Online
+
+One app, registered by Mandioca at developer.intuit.com, connects any
+customer's QuickBooks company. The person clicks **Conectar**, authorises in
+Intuit's own screen with their QuickBooks account and comes back to the
+settings screen already connected. Nothing to type.
+
+- **Credentials** are Mandioca's, not the customer's: `QUICKBOOKS_CLIENT_ID`
+  and `QUICKBOOKS_CLIENT_SECRET` seed the settings on first boot and can be
+  rotated afterwards from the folded "Credenciales de la app" block. The
+  **Redirect URI** the card shows must be registered verbatim in the Intuit
+  app (`PUBLIC_BASE_URL` + `/api/integrations/quickbooks/callback`; production
+  requires https). Sandbox and production have different key pairs
+  (`quickbooks.environment`).
+- **OAuth** — `state` is a signed, 15-minute token carrying who started the
+  connection, so the unauthenticated callback needs no session. Tokens are
+  stored encrypted (Fernet, key derived from `JWT_SECRET`) in
+  `integration_connections` and never reach the frontend. Intuit's refresh
+  token rotates on every refresh and the old one dies, so refreshes are
+  serialised behind a lock and the new pair is persisted before anything uses
+  it. An `invalid_grant` marks the connection **Requiere reconectar**; the
+  only fix is a person clicking **Reconectar**.
+- **What it brings** — money out (`Purchase`, `Bill`) becomes expenses; money
+  in (`Invoice`, `SalesReceipt`) becomes orders. The mapping is fixed, not
+  guessed (the LLM is never involved): description from the private note or
+  the first line, category from the first line's account, vendor/customer from
+  the reference, amount and currency verbatim (`TotalAmt`, `CurrencyRef`, else
+  the company's home currency). An invoice counts as revenue when its balance
+  is zero and waits as pending otherwise; Intuit's own state (`Paid`/`Open`)
+  stays in `extra.source_status`. External keys are `qbo:<entity>:<type>:<id>`
+  and order ids `QB-INV-<id>` / `QB-SR-<id>`, so a second pull updates
+  instead of duplicating, and the copy is verified after every write like the
+  endpoint sync.
+- **Incremental** — the first pull takes every transaction dated from
+  `quickbooks.since` (default: 1 January of the current year); afterwards only
+  what Intuit updated since the previous pull (`MetaData.LastUpdatedTime`),
+  whatever its transaction date. The pull runs on the same clock as the
+  endpoint (`sync.interval_seconds`) while `quickbooks.enabled` and
+  `sync.pull_enabled` are on, plus **Sincronizar ahora**. Each entity reports
+  received / new / updated / skipped, with notes and problems, under
+  `quickbooks.last_pull_report`.
+- **Disconnect** revokes the token at Intuit and forgets the connection;
+  imported records stay. "Borrar importados" removes them (`qbo:` keys) and
+  resets the incremental cursor.
+- **Limits and cost** — 500 requests/min per company, pages of 1000, minor
+  version 75. Reads are metered by Intuit's App Partner Program (500 000 free
+  per month on the Builder tier; writes are free). Production keys require
+  Intuit's self-assessment questionnaire.
 
 ### Sync from the endpoint
 
@@ -398,6 +449,7 @@ app/
 │   └── skills/       .md playbooks (thresholds and sequences)
 ├── services/         finance · records (editing) · security (JWT + bcrypt) · settings
 │                     api_sync (pull + typed columns) · intake · mapping
+│                     quickbooks (OAuth + incremental pull from Intuit)
 │                     sheets (Google Sheets) · charts (SVG) · insights
 │                     pdf (reportlab) · documents · columns
 │                     formula (safe evaluator) · storage · excel_import · media
@@ -458,6 +510,8 @@ only for keys that do not exist yet:
 | `EXTERNAL_API_EXPENSES_MAPPING` | `intake.expenses_override` |
 | `SYNC_ENABLED` | `api.enabled` and `sync.pull_enabled` |
 | `SYNC_INTERVAL_SECONDS` | `sync.interval_seconds` |
+| `QUICKBOOKS_CLIENT_ID` · `QUICKBOOKS_CLIENT_SECRET` | `quickbooks.client_id` · `quickbooks.client_secret` |
+| `QUICKBOOKS_ENVIRONMENT` (`sandbox` \| `production`) | `quickbooks.environment` |
 
 Whatever an administrator saves later in **Configuración** wins over the
 environment. The sync is idempotent: every record carries its external id and
@@ -546,6 +600,9 @@ Railway: receipts go to Cloudinary.
 | `POST` | `/api/import/excel` · `GET /api/import/template/{kind}` | Import and templates |
 | `GET` | `/api/conversations` · `POST /api/chat` | History and agent reply |
 | `GET` | `/api/integrations/status` · `POST /probe` · `POST /sync` | External endpoint |
+| `GET` | `/api/integrations/quickbooks` | Connection state (no tokens) and last report |
+| `POST` | `/api/integrations/quickbooks/connect` · `/sync` · `/disconnect` | Intuit authorisation URL · pull now · revoke (admin) |
+| `GET` | `/api/integrations/quickbooks/callback` | Where Intuit returns the browser; redirects to the panel |
 | `GET` | `/api/health` | Liveness (used by Railway) |
 
 Interactive docs at `http://localhost:8000/docs`.

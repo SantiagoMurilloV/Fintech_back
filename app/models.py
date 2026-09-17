@@ -136,6 +136,43 @@ class Setting(Base):
     updated_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
 
+class IntegrationConnection(Base):
+    """A live OAuth link to an external system (today: QuickBooks Online).
+
+    One row per provider: the panel is one company, so "connected" means one
+    QuickBooks company (realm). Tokens are stored encrypted (services/
+    quickbooks.py) and never leave the server — the frontend only sees the
+    status, the company name and the dates.
+
+    `status`: connected | needs_reconnect | disconnected. The second one is
+    set when Intuit refuses our refresh token (revoked by the user, rotated
+    elsewhere, expired): the only fix is a person clicking "Reconectar".
+    """
+    __tablename__ = "integration_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    environment: Mapped[str] = mapped_column(String(20), default="sandbox")
+    # Intuit's company id; every API URL carries it.
+    realm_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # ISO 4217 code the books are kept in; stamped on records without one.
+    home_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)      # encrypted
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)     # encrypted
+    access_expires_at: Mapped[str | None] = mapped_column(String(25), nullable=True)   # UTC ISO
+    refresh_expires_at: Mapped[str | None] = mapped_column(String(25), nullable=True)  # UTC ISO
+    status: Mapped[str] = mapped_column(String(20), default="connected")
+    connected_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    connected_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+    last_sync_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Incremental sync watermark: records updated after this instant are
+    # fetched on the next pull. Null means "start from the configured date".
+    cursor: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+
+
 class User(Base):
     """Someone who can sign in. Accounts are created by an admin, never
     self-registered, so the panel is never open to whoever finds the URL."""

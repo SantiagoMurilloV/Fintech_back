@@ -143,7 +143,7 @@ def _order_row_id(key: str, slug: str, external_id) -> str:
 
 # ------------------------------------------------------------ dynamic columns
 
-def _raw(record: dict):
+def raw_record(record: dict):
     """The source record, kept verbatim so nothing is ever lost.
 
     Capped only when absurdly large; the cap is reported, never silent.
@@ -156,7 +156,7 @@ def _raw(record: dict):
     return {"_truncated": True, "_preview": str(record)[:2000]}
 
 
-def _verify(db: Session, entity: str, expected: dict[str, tuple[float, str]]) -> dict:
+def verify_copy(db: Session, entity: str, expected: dict[str, tuple[float, str]]) -> dict:
     """Prove the copy: what the database holds equals what the source sent.
 
     Compares, record by record and against fresh rows from the database, the
@@ -459,7 +459,8 @@ def wipe(db: Session, scope: str) -> dict:
             rows = db.scalars(select(model)).all()
             for row in rows:
                 key = (row.extra or {}).get("external_key") if isinstance(row.extra, dict) else None
-                if key and str(key).startswith("api:"):
+                # Anything a sync brought in: the endpoint ("api:") or QuickBooks ("qbo:").
+                if key and str(key).startswith(("api:", "qbo:")):
                     db.delete(row)
                     removed[name] += 1
             registry = db.get(Setting, COLUMN_REGISTRY_KEY.format(entity=name))
@@ -476,7 +477,13 @@ def wipe(db: Session, scope: str) -> dict:
     from .insights import CACHE_KEY as INSIGHTS_CACHE_KEY
     db.execute(delete(Setting).where(or_(
         Setting.key.like("intake.map.%"),
-        Setting.key.in_(("sync.last_pull_report", INSIGHTS_CACHE_KEY)))))
+        Setting.key.in_(("sync.last_pull_report", "quickbooks.last_pull_report",
+                         INSIGHTS_CACHE_KEY)))))
+    # QuickBooks' incremental watermark points at data that is gone: the next
+    # pull starts over from the configured date, without touching the connection.
+    from ..models import IntegrationConnection
+    for conn in db.scalars(select(IntegrationConnection)).all():
+        conn.cursor = None
     db.commit()
     return removed
 
@@ -497,7 +504,7 @@ def source_fields(db: Session, entity: str) -> dict[str, str]:
     return fields
 
 
-def _collectors(result: dict):
+def collectors(result: dict):
     """Two lists in the report, deduplicated: `problems` is what needs a
     person (a substitution, a gap in the totals, an unknown state);
     `notes` records a criterion applied on purpose, so nothing is silent."""
@@ -512,7 +519,7 @@ def _collectors(result: dict):
     return note, remark
 
 
-def _resolve_currency(raw, fallback_currency: str, note, remark) -> str:
+def resolve_currency(raw, fallback_currency: str, note, remark) -> str:
     """Normalise a feed currency and report anything the USD totals will
     treat specially: a fallback, an alias, a peg or a missing rate."""
     currency, ok = mapping.to_currency(raw, fallback_currency)
@@ -534,7 +541,7 @@ def _resolve_currency(raw, fallback_currency: str, note, remark) -> str:
     return currency
 
 
-def _existing_expenses(db: Session) -> dict[str, Expense]:
+def existing_expenses(db: Session) -> dict[str, Expense]:
     rows = db.scalars(select(Expense)).all()
     return {row.extra["external_key"]: row
             for row in rows if isinstance(row.extra, dict) and row.extra.get("external_key")}
@@ -592,7 +599,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
     result["mapping"] = field_map
     result["mapping_decided_by"] = decided_by
 
-    note, remark = _collectors(result)
+    note, remark = collectors(result)
 
     if "amount" not in field_map:
         note(f"Ningún campo parece un monto (vi: {', '.join(fields)}). "
@@ -613,7 +620,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
             note("Algunas filas no tienen un monto usable.")
             continue
 
-        currency = _resolve_currency(
+        currency = resolve_currency(
             record.get(field_map.get("currency", "")), fallback_currency, note, remark)
         source_status = str(record.get(field_map.get("status", ""), "") or "").strip()
         status = mapping.to_status(source_status)
@@ -640,7 +647,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
                        status=status, date=day,
                        gateway=str(record.get(field_map.get("gateway", ""), "") or "")[:30] or None)
         expected[key] = (amount, currency)
-        extra = {"source": "api", "external_key": key, "_raw": _raw(record)}
+        extra = {"source": "api", "external_key": key, "_raw": raw_record(record)}
         if field_map.get("status"):
             # The feed's own words for the state. The table shows them; `status`
             # stays the category behind filters and totals.
@@ -663,7 +670,7 @@ def _pull_orders(db: Session, base_url: str, token: str, path: str,
         note(f"Estados no reconocidos: {listed}. Quedaron como pendientes, fuera del "
              "ingreso, con su texto original en la tabla. Confirme con la fuente qué significan.")
     db.commit()
-    result["verification"] = _verify(db, "orders", expected)
+    result["verification"] = verify_copy(db, "orders", expected)
     if not result["verification"]["exact"]:
         result["problems"].append(
             "VERIFICACIÓN FALLIDA: lo guardado no coincide con la fuente. "
@@ -689,7 +696,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
     result["mapping"] = field_map
     result["mapping_decided_by"] = decided_by
 
-    note, remark = _collectors(result)
+    note, remark = collectors(result)
 
     if "amount" not in field_map or "description" not in field_map:
         missing = [name for name in ("amount", "description") if name not in field_map]
@@ -700,7 +707,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
     extra_columns = _ensure_columns(db, "expenses", records, set(field_map.values()))
     result["extra_columns"] = sorted(column.key for column in extra_columns.values())
 
-    known = _existing_expenses(db)
+    known = existing_expenses(db)
     expected: dict[str, tuple[float, str]] = {}
     for index, record in enumerate(records):
         external = record.get(field_map.get("external_id", ""), index)
@@ -711,7 +718,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
             note("Algunas filas no tienen monto o concepto usables.")
             continue
 
-        currency = _resolve_currency(
+        currency = resolve_currency(
             record.get(field_map.get("currency", "")), fallback_currency, note, remark)
         day = mapping.to_date(record.get(field_map.get("date", "")))
         if day is None:
@@ -728,7 +735,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
         )
         key = _key("expenses", slug, external)
         expected[key] = (amount, currency)
-        extra = {"source": "api", "external_key": key, "_raw": _raw(record)}
+        extra = {"source": "api", "external_key": key, "_raw": raw_record(record)}
         for field, column in extra_columns.items():
             extra[column.key] = _typed_value(record.get(field), column.data_type)
         existing = known.get(key)
@@ -742,7 +749,7 @@ def _pull_expenses(db: Session, base_url: str, token: str, path: str,
             result["updated"] += 1
 
     db.commit()
-    result["verification"] = _verify(db, "expenses", expected)
+    result["verification"] = verify_copy(db, "expenses", expected)
     if not result["verification"]["exact"]:
         result["problems"].append(
             "VERIFICACIÓN FALLIDA: lo guardado no coincide con la fuente. "

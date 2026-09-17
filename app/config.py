@@ -76,6 +76,24 @@ EXTERNAL_API_KEY = os.getenv("EXTERNAL_API_KEY") or None
 # the djangorestframework-api-key convention).
 EXTERNAL_API_AUTH_SCHEME = os.getenv("EXTERNAL_API_AUTH_SCHEME", "bearer").strip().lower()
 
+# --- QuickBooks Online (Intuit) ---
+# ONE app registered by Mandioca at developer.intuit.com; the customer never
+# types credentials, they only click "Conectar" and authorise in Intuit's own
+# screen. Client id/secret seed the settings on first boot (see below) and
+# can be rotated afterwards from Configuración without a deploy.
+QUICKBOOKS_CLIENT_ID = os.getenv("QUICKBOOKS_CLIENT_ID") or None
+QUICKBOOKS_CLIENT_SECRET = os.getenv("QUICKBOOKS_CLIENT_SECRET") or None
+# "sandbox" (Intuit test company) or "production". Each has its own key pair.
+QUICKBOOKS_ENVIRONMENT = os.getenv("QUICKBOOKS_ENVIRONMENT", "sandbox").strip().lower()
+# Where Intuit sends the browser back after the customer authorises. Must be
+# registered VERBATIM in the app's "Redirect URIs" at developer.intuit.com.
+# Production requires https; sandbox accepts http://localhost.
+QUICKBOOKS_REDIRECT_URI = os.getenv("QUICKBOOKS_REDIRECT_URI") or None  # default: PUBLIC_BASE_URL + callback path
+
+# --- Frontend URL, where the API sends the browser after an OAuth round trip ---
+# Defaults to the first CORS origin, which is the panel in every deploy.
+FRONTEND_URL = (os.getenv("FRONTEND_URL") or "").rstrip("/") or None
+
 # --- Demo financial feed (routers/demo_feed.py) ---
 # Key the built-in demo feed expects, mirroring the real provider's Api-Key
 # auth. Not a secret: the feed serves deterministic fake data.
@@ -132,6 +150,10 @@ SETTINGS_FROM_ENV = {key: value.strip() for key, value in {
     "api.enabled": os.getenv("SYNC_ENABLED"),
     "sync.pull_enabled": os.getenv("SYNC_ENABLED"),
     "sync.interval_seconds": os.getenv("SYNC_INTERVAL_SECONDS"),
+    # QuickBooks app credentials (Mandioca's, not the customer's).
+    "quickbooks.client_id": QUICKBOOKS_CLIENT_ID,
+    "quickbooks.client_secret": QUICKBOOKS_CLIENT_SECRET,
+    "quickbooks.environment": os.getenv("QUICKBOOKS_ENVIRONMENT"),
 }.items() if value is not None and str(value).strip()}
 
 # Seconds after boot before the first background pull: long enough for the

@@ -34,16 +34,27 @@ def _pull_tick() -> int:
     every tick, so changing it in Configuración applies without a restart, and
     the api.enabled / sync.pull_enabled switches pause it the same way.
     """
-    from .services import api_sync
+    from .services import api_sync, quickbooks
     from .services import settings as settings_service
 
+    log = logging.getLogger("sync")
     with SessionLocal() as db:
         values = settings_service.all_values(db)
         interval = int(values.get("sync.interval_seconds") or 60)
-        should_run = (values.get("api.enabled") and values.get("sync.pull_enabled")
+        pull_enabled = values.get("sync.pull_enabled")
+        should_run = (values.get("api.enabled") and pull_enabled
                       and str(values.get("api.base_url") or "").strip())
         if should_run:
-            api_sync.pull(db)
+            try:
+                api_sync.pull(db)
+            except Exception as err:  # noqa: BLE001 — one source failing must not block the other
+                log.warning("Endpoint pull failed: %s", err)
+        # QuickBooks pulls on the same clock, only while connected and switched on.
+        if pull_enabled and values.get("quickbooks.enabled") and quickbooks.is_connected(db):
+            try:
+                quickbooks.pull(db)
+            except Exception as err:  # noqa: BLE001
+                log.warning("QuickBooks pull failed: %s", err)
     return max(15, interval)
 
 

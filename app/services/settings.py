@@ -18,7 +18,10 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import EXTERNAL_API_KEY, EXTERNAL_API_URL
+from ..config import (
+    EXTERNAL_API_KEY, EXTERNAL_API_URL, QUICKBOOKS_CLIENT_ID, QUICKBOOKS_CLIENT_SECRET,
+    QUICKBOOKS_ENVIRONMENT,
+)
 from ..models import Setting
 
 # key -> (type, default). The type is what the value is coerced to on write.
@@ -52,6 +55,21 @@ SCHEMA: dict[str, tuple[str, object]] = {
     "sync.pull_enabled": ("bool", True),
     "sync.push_enabled": ("bool", True),
     "sync.interval_seconds": ("int", 60),
+    # --- QuickBooks Online ------------------------------------------------
+    # Mandioca's app at developer.intuit.com. The customer never sees these:
+    # connecting is one click plus Intuit's own consent screen.
+    "quickbooks.client_id": ("str", QUICKBOOKS_CLIENT_ID or ""),
+    "quickbooks.client_secret": ("secret", QUICKBOOKS_CLIENT_SECRET or ""),
+    # "sandbox" (Intuit's test company) or "production"; separate key pairs.
+    "quickbooks.environment": ("str", QUICKBOOKS_ENVIRONMENT or "sandbox"),
+    # Whether the background loop pulls from the connected company.
+    "quickbooks.enabled": ("bool", True),
+    # What to bring: money out (Purchase, Bill) and/or money in (Invoice,
+    # SalesReceipt). Each becomes our expenses / orders.
+    "quickbooks.sync_expenses": ("bool", True),
+    "quickbooks.sync_sales": ("bool", True),
+    # First pull starts at this date (YYYY-MM-DD); empty = current year.
+    "quickbooks.since": ("str", ""),
 }
 
 SECRET_KEYS = {key for key, (kind, _) in SCHEMA.items() if kind == "secret"}
@@ -115,6 +133,15 @@ def update(db: Session, changes: dict, actor: str | None = None) -> dict:
                 raise ValueError("El esquema de autenticación debe ser «bearer» o «api-key».")
         if key == "sheets.credentials":
             value = _validated_credentials(value)
+        if key == "quickbooks.environment":
+            value = value.lower()
+            if value not in ("sandbox", "production"):
+                raise ValueError("El entorno de QuickBooks debe ser «sandbox» o «production».")
+        if key == "quickbooks.since" and value:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("La fecha de inicio de QuickBooks debe ser AAAA-MM-DD.") from None
 
         row = db.get(Setting, key)
         if row is None:
@@ -162,20 +189,23 @@ def _validated_credentials(raw: str) -> str:
 REPORT_KEY = "sync.last_pull_report"
 
 
-def save_report(db: Session, report: dict) -> None:
-    """Keep the outcome of the last pull, shown in the settings screen."""
-    row = db.get(Setting, REPORT_KEY)
+def save_report(db: Session, report: dict, key: str = REPORT_KEY) -> None:
+    """Keep the outcome of the last pull, shown in the settings screen.
+
+    Each source keeps its own report under its own key (the endpoint, QuickBooks).
+    """
+    row = db.get(Setting, key)
     stamp = datetime.now().isoformat(timespec="seconds")
     report = {**report, "ran_at": stamp}
     if row is None:
-        db.add(Setting(key=REPORT_KEY, value=report, updated_at=stamp))
+        db.add(Setting(key=key, value=report, updated_at=stamp))
     else:
         row.value, row.updated_at = report, stamp
     db.commit()
 
 
-def last_report(db: Session) -> dict | None:
-    row = db.get(Setting, REPORT_KEY)
+def last_report(db: Session, key: str = REPORT_KEY) -> dict | None:
+    row = db.get(Setting, key)
     return row.value if row is not None else None
 
 

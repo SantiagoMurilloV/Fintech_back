@@ -14,3 +14,4 @@ openai>=1.50          # DeepSeek vía API compatible con OpenAI
 reportlab>=4.2         # deterministic PDF generation
 pypdf>=5.1             # PDF text extraction for chat attachments
 pillow>=11.0           # image metadata for chat attachments
+cryptography>=43      # QuickBooks tokens encrypted at rest (Fernet)
