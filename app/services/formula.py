@@ -47,9 +47,53 @@ _FUNCTIONS = {
 
 MAX_LENGTH = 500
 
+# `9 ** 9 ** 9` is a valid expression that keeps a worker busy for minutes, and
+# `"a" * 10 ** 9` fills its memory. No business formula needs either.
+MAX_EXPONENT = 100
+MAX_REPEAT = 10_000
+# Integers past ~10^77 are not money; floats overflow on their own.
+MAX_INT_BITS = 256
+
 
 class FormulaError(ValueError):
     pass
+
+
+def names(expression: str) -> set[str]:
+    """Every field or account an expression reads, functions excluded."""
+    tree = ast.parse(expression, mode="eval")
+    return {node.id for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id not in _FUNCTIONS}
+
+
+def _bounded(value):
+    """Refuse a result too big to be a business figure.
+
+    Checking each operation alone is not enough: `"a" * 9999 * 9999` and
+    `(10 ** 100) ** 100` chain steps that are each allowed into something
+    that exhausts memory. Every intermediate result passes through here.
+    """
+    if isinstance(value, str) and len(value) > MAX_REPEAT:
+        raise ValueError("text too long")
+    if isinstance(value, int) and not isinstance(value, bool) and value.bit_length() > MAX_INT_BITS:
+        raise ValueError("number too large")
+    return value
+
+
+def _power(base, exponent):
+    if isinstance(exponent, (int, float)) and abs(exponent) > MAX_EXPONENT:
+        raise ValueError("exponent too large")
+    if (isinstance(base, int) and isinstance(exponent, int) and exponent > 0
+            and abs(base) > 1 and abs(base).bit_length() * exponent > MAX_INT_BITS):
+        raise ValueError("number too large")
+    return operator.pow(base, exponent)
+
+
+def _multiply(left, right):
+    for text, count in ((left, right), (right, left)):
+        if isinstance(text, str) and isinstance(count, int) and len(text) * count > MAX_REPEAT:
+            raise ValueError("repetition too large")
+    return operator.mul(left, right)
 
 
 def validate(expression: str) -> None:
@@ -72,6 +116,10 @@ def _check(node: ast.AST) -> None:
     elif isinstance(node, ast.BinOp):
         if type(node.op) not in _BIN_OPS:
             raise FormulaError("Operador no permitido.")
+        if (isinstance(node.op, ast.Pow) and isinstance(node.right, ast.Constant)
+                and isinstance(node.right.value, (int, float))
+                and abs(node.right.value) > MAX_EXPONENT):
+            raise FormulaError(f"El exponente no puede superar {MAX_EXPONENT}.")
         _check(node.left)
         _check(node.right)
     elif isinstance(node, ast.UnaryOp):
@@ -120,7 +168,12 @@ def _eval(node: ast.AST, row: dict):
     if isinstance(node, ast.Name):
         return row.get(node.id)
     if isinstance(node, ast.BinOp):
-        return _BIN_OPS[type(node.op)](_eval(node.left, row), _eval(node.right, row))
+        left, right = _eval(node.left, row), _eval(node.right, row)
+        if isinstance(node.op, ast.Pow):
+            return _bounded(_power(left, right))
+        if isinstance(node.op, ast.Mult):
+            return _bounded(_multiply(left, right))
+        return _bounded(_BIN_OPS[type(node.op)](left, right))
     if isinstance(node, ast.UnaryOp):
         return _UNARY_OPS[type(node.op)](_eval(node.operand, row))
     if isinstance(node, ast.BoolOp):

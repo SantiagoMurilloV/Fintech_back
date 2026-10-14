@@ -4,7 +4,7 @@ Identifiers, columns and enum codes are English by convention. User-facing
 content (customer names, expense descriptions, chat messages) is data and may
 be in any language.
 """
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -171,6 +171,63 @@ class IntegrationConnection(Base):
     # fetched on the next pull. Null means "start from the configured date".
     cursor: Mapped[str | None] = mapped_column(String(40), nullable=True)
     updated_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+
+
+class Account(Base):
+    """One line of the company's accounting plan (plan de cuentas).
+
+    The plan is data, not code: each company loads its own tree (from a
+    template in app/plans/ or built on screen) and the statement engine
+    (services/statement.py) evaluates it. Three kinds:
+
+      input   a box someone fills: a monthly figure typed, imported or, later,
+              calculated from synced records (`source`, `rule`).
+      total   a recipe of other accounts (`formula`, e.g. "rent + salaries"),
+              always computed and never stored, so it cannot disagree with
+              its parts.
+      group   a heading that only organises the tree; it carries no value.
+
+    `percent_of` names the account a line is measured against in the vertical
+    analysis; `nature` says whether going up is good (income, result) or bad
+    (cost); `unit` lets an indicator be a percentage or basis points instead
+    of money.
+    """
+    __tablename__ = "accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    parent_key: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(10), default="input")       # input | total | group
+    formula: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unit: Mapped[str] = mapped_column(String(10), default="usd")         # usd | pct | bps
+    nature: Mapped[str] = mapped_column(String(10), default="cost")      # income | cost | result
+    percent_of: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    headline: Mapped[bool] = mapped_column(Boolean, default=False)
+    definition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Other names the company's own spreadsheets use for this line, so an
+    # import of «USDT Sended» lands on the account the plan calls «USDT Sent».
+    aliases: Mapped[list] = mapped_column(JsonColumn, default=list)
+    # Where an input's monthly figure comes from: "manual" today; synced
+    # records (with `rule`) in a later phase.
+    source: Mapped[str] = mapped_column(String(20), default="manual")
+    rule: Mapped[dict | None] = mapped_column(JsonColumn, nullable=True)
+
+
+class AccountValue(Base):
+    """The figure of one input account for one month, in USD."""
+    __tablename__ = "account_values"
+    __table_args__ = (UniqueConstraint("account_key", "period", name="uq_account_period"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_key: Mapped[str] = mapped_column(String(60), index=True)
+    period: Mapped[str] = mapped_column(String(7), index=True)          # YYYY-MM
+    amount: Mapped[float] = mapped_column(Float)
+    # "typed" or "import:<file name>": where the figure came from.
+    origin: Mapped[str] = mapped_column(String(160), default="typed")
+    updated_at: Mapped[str] = mapped_column(String(19))
+    updated_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
 
 class User(Base):

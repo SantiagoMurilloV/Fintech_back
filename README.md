@@ -319,6 +319,57 @@ numeric series and is redrawn in the document.
   them with the same renderer: if the data changes shape, the analysis changes
   with it without touching the frontend.
 
+## Accounting plan and income statement
+
+Every company sorts its money into the same kind of boxes and wants the same
+monthly report from them; what changes is the boxes. So the mechanism is
+generic code and each company's plan is **data**.
+
+- **The plan** (`plan de cuentas`) is a tree of accounts. An **input** is a box
+  someone fills with the month's figure («Rent = 9,500»). A **total** is a
+  recipe of other accounts («gross_profit - operational_costs»), always
+  computed and never stored, so it cannot disagree with its parts. A **group**
+  only organises. Each account also says what it is measured against for the
+  vertical analysis (`percent_of`), whether going up is good or bad
+  (`nature`), its unit (USD, %, basis points), its definition and the other
+  names it carries in the company's own spreadsheets (`aliases`).
+- **Templates** are JSON files in `app/plans/`: `mandioca.json` (the on/off
+  ramp management statement: volume, spread per ramp, platform costs, fixed
+  and variable costs, net result and three efficiency indicators in basis
+  points) and `basic.json` (revenue, cost of sales, operating expenses).
+  A template for another company is a new file, not new code. Loaded from
+  Configuración and edited in **Plan de cuentas**; the whole tree is validated
+  before it is stored (unique keys, parents exist, every name in a recipe is
+  an account, no recipe depends on itself, no two accounts answer to the same
+  label).
+- **The statement** (`services/statement.py`) fills the inputs with the
+  month's figures, evaluates the recipes in dependency order with the safe
+  evaluator (`services/formula.py`) and adds the vertical analysis (each line
+  as a share of its base) and the horizontal one (against the previous month
+  or the same month last year). **A missing figure is never invented**: it
+  counts as zero inside the recipes and every line it touches is marked
+  partial. The same block list feeds the screen, the PDF in Reportes and,
+  later, the agent.
+- **History import** (`services/plan_import.py`) reads the workbooks finance
+  teams already keep: accounts down, months across, every sheet, labels in
+  any column left of the months, month headers as «2026-05», «May/2026»,
+  «Mayo 2026» or real dates, figures as «$1,234.56», «1.234,56» or «(18.00)».
+  Inputs are stored; **totals in the file are checked, not stored** — «your
+  file says X, the recipe gives Y». A figure the file gives twice with
+  different values is **not written** (a rounded copy, under a dollar apart,
+  keeps the precise one). Every import is previewed first (`dry_run`) and the
+  report separates what needs a person (`problems`) from criteria applied
+  (`notes`).
+
+Loading Mandioca's own April/May 2026 statement this way reproduces it to the
+cent (gross profit 277,082.68, operational profit 175,845.76, −12.68 % vs
+April, net 90,139.53) and flags what the deck itself disagrees on: May
+salaries are 12,855 in one table and 12,892 in the other, and Auxo is left out
+of one of them.
+
+Structure is the admin's (it defines what the numbers mean); figures are
+everyone's, like orders and expenses.
+
 ## Editing from the table
 
 Every value in Orders and Expenses is edited where it is read: a click turns
@@ -447,7 +498,9 @@ app/
 │   ├── blocks.py     block contract consumed by the frontend
 │   ├── tools/        analytics · records · schema · reporting · documents · external
 │   └── skills/       .md playbooks (thresholds and sequences)
-├── services/         finance · records (editing) · security (JWT + bcrypt) · settings
+├── plans/            accounting plan templates (JSON, one per file)
+├── services/         plan · statement · plan_import (accounting layer)
+│                     finance · records (editing) · security (JWT + bcrypt) · settings
 │                     api_sync (pull + typed columns) · intake · mapping
 │                     quickbooks (OAuth + incremental pull from Intuit)
 │                     sheets (Google Sheets) · charts (SVG) · insights
@@ -479,6 +532,14 @@ With `SEED_DEMO=true` (the default), on first boot the backend creates the
 tables and seeds the **deterministic demo mock** (May–July 2026: 3,554 orders,
 July ≈ USD 512.4 k, +8.2 % vs. June). With `SEED_DEMO=false` an empty database
 stays empty — the mode for working with real data.
+
+Tests run on an in-memory SQLite database, with Intuit faked, and never touch
+the network:
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt
+./.venv/bin/python -m pytest tests
+```
 
 The mock is deterministic: the same figures on every machine. To regenerate it,
 set `SEED_DEMO=true`, empty the tables (or `dropdb && createdb`) and restart.
@@ -597,6 +658,12 @@ Railway: receipts go to Cloudinary.
 | `GET` | `/api/reports?period` | Month aggregates + `deltas` |
 | `GET` | `/api/reports/export.csv` | CSV |
 | `GET` | `/api/insights` · `POST /api/insights/report` | Derived analysis and its PDF |
+| `GET/PUT` | `/api/plan` | Accounting plan; replacing it is admin-only and validated whole |
+| `GET/POST` | `/api/plan/templates` · `/api/plan/template` | Shipped templates · load one (admin; `replace` to overwrite) |
+| `GET/PUT` | `/api/plan/values?first&last` | Input accounts × months; write or erase figures |
+| `POST` | `/api/plan/values/import` · `GET /api/plan/values/template.xlsx` | History workbook (`dry_run` previews) · fillable template |
+| `GET` | `/api/statement?period&compare=prev\|year\|none\|YYYY-MM` · `/export.csv` | Income statement: raw numbers per line, vertical and horizontal |
+| `POST` | `/api/statement/report` | The statement as a PDF in Reportes |
 | `POST` | `/api/import/excel` · `GET /api/import/template/{kind}` | Import and templates |
 | `GET` | `/api/conversations` · `POST /api/chat` | History and agent reply |
 | `GET` | `/api/integrations/status` · `POST /probe` · `POST /sync` | External endpoint |
