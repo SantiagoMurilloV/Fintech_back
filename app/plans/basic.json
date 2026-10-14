@@ -1,0 +1,35 @@
+{
+  "name": "Básico · Ingresos y gastos",
+  "description": "Punto de partida para cualquier empresa: ingresos, costo de ventas, gastos de operación y resultado. Se adapta en pantalla.",
+  "accounts": [
+    {"key": "revenue", "name": "Ingresos", "kind": "total", "nature": "income",
+     "formula": "sales + other_income", "headline": true,
+     "definition": "Todo lo que la empresa factura en el mes."},
+    {"key": "sales", "name": "Ventas", "parent_key": "revenue", "kind": "input", "nature": "income",
+     "percent_of": "revenue", "definition": "Ventas de productos o servicios."},
+    {"key": "other_income", "name": "Otros ingresos", "parent_key": "revenue", "kind": "input",
+     "nature": "income", "percent_of": "revenue", "definition": "Ingresos que no vienen de la operación principal."},
+
+    {"key": "cost_of_sales", "name": "Costo de ventas", "kind": "input", "nature": "cost",
+     "percent_of": "revenue", "definition": "Lo que cuesta producir o entregar lo vendido."},
+    {"key": "gross_profit", "name": "Utilidad bruta", "kind": "total", "nature": "result",
+     "formula": "revenue - cost_of_sales", "percent_of": "revenue", "headline": true,
+     "definition": "Ingresos menos el costo de lo vendido."},
+
+    {"key": "operating_expenses", "name": "Gastos de operación", "kind": "total", "nature": "cost",
+     "formula": "payroll + rent + marketing + other_expenses", "percent_of": "revenue",
+     "definition": "Lo que cuesta mantener la empresa funcionando."},
+    {"key": "payroll", "name": "Nómina", "parent_key": "operating_expenses", "kind": "input", "nature": "cost",
+     "percent_of": "operating_expenses", "definition": "Salarios y prestaciones."},
+    {"key": "rent", "name": "Arriendo", "parent_key": "operating_expenses", "kind": "input", "nature": "cost",
+     "percent_of": "operating_expenses", "definition": "Oficinas y espacios."},
+    {"key": "marketing", "name": "Marketing", "parent_key": "operating_expenses", "kind": "input",
+     "nature": "cost", "percent_of": "operating_expenses", "definition": "Publicidad, eventos y material."},
+    {"key": "other_expenses", "name": "Otros gastos", "parent_key": "operating_expenses", "kind": "input",
+     "nature": "cost", "percent_of": "operating_expenses", "definition": "Gastos no clasificados arriba."},
+
+    {"key": "net_result", "name": "Resultado neto", "kind": "total", "nature": "result",
+     "formula": "gross_profit - operating_expenses", "percent_of": "revenue", "headline": true,
+     "definition": "Lo que queda después de todos los costos y gastos."}
+  ]
+}
