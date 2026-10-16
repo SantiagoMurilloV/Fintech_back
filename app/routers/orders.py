@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
@@ -13,9 +13,9 @@ from ..config import FX_TO_USD
 from ..database import get_db
 from ..models import CURRENCIES, GATEWAYS, ORDER_STATUSES, CustomColumn, Order
 from ..services import columns as columns_service
-from ..services import api_sync, finance, order_search
+from ..services import api_sync, finance, order_search, otc_import
 from ..services import records as records_service
-from .auth import AuthDep
+from .auth import AdminDep, AuthDep
 
 router = APIRouter(tags=["orders"], dependencies=[AuthDep])
 
@@ -211,6 +211,26 @@ def update_order(order_id: str, body: OrderPatch, db: Session = Depends(get_db))
 
     return {"item": order_view(order, columns_service.list_columns(db, "orders")),
             "changed": list(applied)}
+
+
+MAX_OTC_BYTES = 25 * 1024 * 1024
+
+
+@router.post("/api/orders/import/otc")
+async def import_otc(file: UploadFile = File(...), dry_run: bool = Form(False),
+                     db: Session = Depends(get_db), _=AdminDep):
+    """Load the «OTC» tab of a yearly workbook as orders (admin only).
+
+    `dry_run` reads and reports without writing. Loading the same file again
+    replaces its trades (ids come from year and sheet row), never duplicates.
+    """
+    content = await file.read()
+    if len(content) > MAX_OTC_BYTES:
+        raise HTTPException(status_code=413, detail="El archivo supera 25 MB.")
+    try:
+        return otc_import.run(db, content, dry_run=dry_run)
+    except otc_import.OTCImportError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from None
 
 
 @router.get("/api/orders/export.csv")

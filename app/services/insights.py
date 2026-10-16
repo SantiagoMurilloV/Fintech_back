@@ -45,7 +45,7 @@ from ..agent.formatting import integer, percent, status_label, usd_compact
 from ..models import CustomColumn, Expense, Order, Setting
 from . import charts, finance, llm
 
-MAX_ROWS = 5000
+MAX_ROWS = 100_000      # a year of OTC trades is ~10k rows
 MAX_CATEGORICAL = 15    # more distinct values than this is an id, not a category
 
 NARRATOR_PROMPT = """You write the opening paragraph of a financial analysis.
