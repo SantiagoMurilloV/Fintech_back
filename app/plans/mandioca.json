@@ -19,8 +19,15 @@
      "nature": "cost", "aliases": ["USD Sended", "USD enviados"],
      "definition": "Off-Ramp (Sell): valor en USD enviados."},
 
+    {"key": "reals_usdt_received", "name": "USDT Received (BRL desk)", "parent_key": "operational_volume",
+     "kind": "input", "nature": "income", "aliases": ["REALS - USDT Received", "Bloxpay USDT"],
+     "definition": "Mesa BRL: USDT que entrega el proveedor por los reales vendidos."},
+    {"key": "reals_usdt_sent", "name": "USDT Sent (BRL desk)", "parent_key": "operational_volume",
+     "kind": "input", "nature": "cost", "aliases": ["REALS - USDT Sent"],
+     "definition": "Mesa BRL: USDT enviados a los clientes que vendieron reales."},
+
     {"key": "gross_profit", "name": "Gross Profit", "kind": "total", "nature": "income",
-     "formula": "gross_profit_on_ramp + gross_profit_off_ramp", "headline": true,
+     "formula": "gross_profit_on_ramp + gross_profit_off_ramp + gross_profit_brl", "headline": true,
      "aliases": ["Ingresos brutos", "Utilidad bruta"],
      "definition": "Ingresos brutos: el spread de ambas rampas."},
     {"key": "gross_profit_on_ramp", "name": "On-Ramp (Buy)", "parent_key": "gross_profit", "kind": "total",
@@ -29,6 +36,9 @@
     {"key": "gross_profit_off_ramp", "name": "Off-Ramp (Sell)", "parent_key": "gross_profit", "kind": "total",
      "nature": "income", "formula": "usdt_received - usd_sent", "percent_of": "gross_profit",
      "definition": "Diferencia entre los USDT recibidos y los USD enviados (supone 1 USDT = 1 USD)."},
+    {"key": "gross_profit_brl", "name": "BRL desk", "parent_key": "gross_profit", "kind": "total",
+     "nature": "income", "formula": "reals_usdt_received - reals_usdt_sent", "percent_of": "gross_profit",
+     "definition": "Lo que deja la mesa de reales: USDT recibidos del proveedor menos USDT enviados a clientes."},
 
     {"key": "operational_costs", "name": "Operational Costs", "kind": "total", "nature": "cost",
      "formula": "mandioca_cost_buy + mandioca_cost_sell", "percent_of": "gross_profit",
