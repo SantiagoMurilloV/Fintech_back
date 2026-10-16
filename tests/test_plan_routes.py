@@ -134,7 +134,7 @@ def test_csv_export_has_one_row_per_account(loaded, member):
                           headers=member)
     assert response.status_code == 200
     assert response.text.splitlines()[0].startswith("account,name,level")
-    assert len(response.text.splitlines()) == 1 + 31
+    assert len(response.text.splitlines()) == 1 + 34
 
 
 def test_statement_without_a_plan_explains_what_to_do(client, member):

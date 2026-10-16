@@ -17,12 +17,12 @@ APRIL = dict(usd_received=1090152.00, usdt_sent=1081796.64, usdt_received=627929
              usd_sent=62511286.63, mandioca_cost_buy=1572, mandioca_cost_sell=87058,
              sales_commissions=12169.96, salaries=12910, rent=9500, compliance=2000,
              accounting=1000, auxo=5462, one_to_many=1000, events=600, merchandizing=551.20,
-             other_costs_expenses=118316.98)
+             other_costs_expenses=118316.98, reals_usdt_received=0, reals_usdt_sent=0)
 MAY = dict(usd_received=552798.00, usdt_sent=548527.01, usdt_received=59147036.48,
            usd_sent=58874224.79, mandioca_cost_buy=164.23, mandioca_cost_sell=101072.69,
            sales_commissions=30703.19, salaries=12892, rent=9500, compliance=2000,
            accounting=1000, auxo=5462, one_to_many=1000, events=6350, merchandizing=942,
-           other_costs_expenses=15857.04)
+           other_costs_expenses=15857.04, reals_usdt_received=0, reals_usdt_sent=0)
 
 
 @pytest.fixture
@@ -213,7 +213,7 @@ def test_a_clean_history_sheet_is_stored_and_its_totals_checked(mandioca):
     report = plan_import.run(mandioca, content, "historia.xlsx", actor="test")
 
     assert report["periods"] == ["2026-04", "2026-05"]
-    assert report["written"] == 32 and report["conflicts"] == []
+    assert report["written"] == 36 and report["conflicts"] == []
     assert report["matched"] == 1                 # May operational profit, exact
     assert len(report["rounding"]) == 2           # April: 201,386 and 37,875.87, under a dollar
     mismatch, = report["mismatches"]
