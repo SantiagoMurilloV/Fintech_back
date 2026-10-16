@@ -126,7 +126,11 @@ def _bars(series: list[dict], width: int, height: int) -> str:
 
 def _hbars(series: list[dict], width: int, height: int) -> str:
     """Horizontal bars — better for long category labels."""
-    left, top, plot_w, plot_h = _plot_area(width, height, left=180, right=130, top=12, bottom=12)
+    # The label column fits the longest name (≈9 px a character at 17 px),
+    # within a third of the width, so «Empresa de Prueba #1» is never cut.
+    longest = max((len(str(point["label"])) for point in series), default=0)
+    room = int(min(max(longest * 9.2 + 24, 90), width * 0.34))
+    left, top, plot_w, plot_h = _plot_area(width, height, left=room, right=130, top=12, bottom=12)
     top_value = max((s["value"] for s in series), default=0) or 1
     parts = []
     slot = plot_h / len(series)
