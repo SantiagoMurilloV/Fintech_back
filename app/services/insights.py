@@ -6,13 +6,19 @@ the other way around: it profiles the dataset, discovers which dimensions
 carry information — including the dynamic columns a feed created — and builds
 the analysis FROM that.
 
-The output is ordered like a statistics report and every section is titled:
+The output is read in tabs, each answering one question a person running the
+business asks (see TABS):
 
-    1. Resumen general          the headline numbers
-    2. Estadística descriptiva  central tendency and dispersion of the amounts
-    3. Lecturas e inferencias   outliers (IQR), concentration (Pareto), CV,
-                                data-quality observations
-    4. Distribuciones           one titled chart per informative dimension
+    Resumen     volume in every state, approval rate, typical ticket, and a
+                short «Atención» list of what deserves a look
+    Tendencia   volume per month (per week for short spans), split by state
+    Clientes    who moves the volume, with each one's approval rate
+    Operación   one bar chart per informative dimension: state, ticket size,
+                gateway, currency and the categorical columns of the feed
+    Datos       origin and quality of the data, plus the full statistics
+
+Rejected and pending orders are never filtered out: they are counted,
+coloured and called out, because they are information too.
 
 Every figure is computed here, deterministically. The model contributes at
 most the opening paragraph, constrained to the computed numbers — without it
@@ -25,9 +31,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
-from statistics import mean, median, quantiles, stdev
+from statistics import mean, median, quantiles
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,10 +46,7 @@ from ..models import CustomColumn, Expense, Order, Setting
 from . import charts, finance, llm
 
 MAX_ROWS = 5000
-MAX_SLICES = 6          # a pie beyond this is unreadable; hbar takes over
 MAX_CATEGORICAL = 15    # more distinct values than this is an id, not a category
-CONCENTRATION = 0.40    # share that makes a single value worth calling out
-HIGH_CV = 100.0         # coefficient of variation (%) that reads as high dispersion
 
 NARRATOR_PROMPT = """You write the opening paragraph of a financial analysis.
 
@@ -50,7 +54,8 @@ Hard rules:
 - Use ONLY figures present in the JSON. Never add, round or extrapolate.
 - Two or three sentences, formal Colombian Spanish — address the reader as
   «usted», never «vos» or «tú» —, no markdown. Plain, direct, useful.
-- Lead with what matters most (totals, concentration, anything unusual).
+- Lead with what matters most: total volume and how it splits by state
+  (approved, pending, rejected), then concentration or anything unusual.
 - If the data is trivial or empty, say so plainly."""
 
 INTERPRETER_PROMPT = """You interpret the computed statistics of a financial
@@ -76,6 +81,9 @@ Hard rules:
 # no matter which writer (endpoint sync, sheet, manual edit) moved it.
 
 CACHE_KEY = "insights.cache"
+# Bumped when the shape of the analysis changes: an older cached copy is then
+# rebuilt once instead of being served in a layout the screen no longer reads.
+CACHE_VERSION = 2
 
 
 def fingerprint(db: Session) -> str:
@@ -145,92 +153,99 @@ def get(db: Session, refresh: bool = False) -> dict:
     """
     entry = _cached(db)
     mark = fingerprint(db)
-    if entry is None or refresh:
+    if entry is None or refresh or entry.get("version") != CACHE_VERSION:
         stamp = datetime.now().isoformat(timespec="seconds")
         result = build(db)
-        _store(db, {"fingerprint": mark, "generated_at": stamp, "result": result})
+        _store(db, {"fingerprint": mark, "generated_at": stamp, "result": result,
+                    "version": CACHE_VERSION})
         return {**result, "generated_at": stamp, "stale": False}
     return {**entry.get("result", {}), "generated_at": entry.get("generated_at"),
             "stale": entry.get("fingerprint") != mark}
 
 
+# ------------------------------------------------------------------- tabs
+# The analysis is read in tabs, each answering one question a person running
+# the business actually asks. Every state of an order stays visible — a
+# rejected order is information (lost revenue, a failing provider), so it is
+# counted and coloured, never filtered out of the totals.
+
+TABS = [
+    ("resumen", "Resumen", "Lo esencial: cuánto se movió, en qué estado quedó y qué merece atención."),
+    ("tendencia", "Tendencia", "Cómo evoluciona el volumen en el tiempo, separado por estado."),
+    ("clientes", "Clientes", "Quiénes mueven el volumen y con qué tasa de aprobación."),
+    ("operacion", "Operación", "Cómo se reparten las órdenes por estado, tamaño, red, país y demás "
+                               "dimensiones que trae la fuente."),
+    ("datos", "Datos", "De dónde vienen los datos, su calidad y las estadísticas completas."),
+]
+
+# Order states in reading order, with plural names for totals.
+STATE_ORDER = ["approved", "pending", "rejected", "refunded"]
+STATE_PLURAL = {"approved": "Aprobadas", "pending": "Pendientes",
+                "rejected": "Rechazadas", "refunded": "Reembolsadas"}
+
+# Ticket-size ranges (USD) a person reads at a glance; a linear histogram of
+# skewed amounts puts everything in its first bar.
+SIZE_BUCKETS = [(0, 100, "Menos de USD 100"), (100, 500, "USD 100 – 500"),
+                (500, 1_000, "USD 500 – 1.000"), (1_000, 5_000, "USD 1.000 – 5.000"),
+                (5_000, float("inf"), "USD 5.000 o más")]
+
+DOMINANT = 0.95         # a dimension where one value is this share is a fact, not a chart
+TOP_CLIENTS = 15
+WIDE_W = 1120           # a chart that spans the row is drawn at that width, not stretched
+ID_HINTS = ("id", "number", "numero", "document", "phone", "telefono", "nit", "cedula",
+            "code", "codigo", "zip", "postal")
+
+
 def build(db: Session) -> dict:
-    """The full analysis: blocks ready to render plus the data behind them."""
+    """The full analysis: tabs of blocks, the same blocks flattened, and the data."""
     orders = list(db.scalars(select(Order).limit(MAX_ROWS)).all())
     expenses = list(db.scalars(select(Expense).limit(MAX_ROWS)).all())
 
     if not orders and not expenses:
-        return {"blocks": [blocks.notice(
+        empty = [blocks.notice(
             "Todavía no hay datos para analizar. Registre movimientos o "
-            "sincronice una fuente en Configuración.", tone="info")], "data": {}}
+            "sincronice una fuente en Configuración.", tone="info")]
+        return {"blocks": empty, "tabs": [], "data": {}}
 
     data: dict = {}
-    findings: list[dict] = []
-    order_amounts = _usd_amounts(orders)
-    expense_amounts = _usd_amounts(expenses)
+    attention: list[dict] = []
+    tabs = {
+        "resumen": _summary_tab(orders, expenses, data, attention),
+        "tendencia": _trend_tab(orders, data),
+        "clientes": _clients_tab(orders, data, attention),
+        "operacion": _operation_tab(db, orders, expenses, data, attention),
+        "datos": _data_tab(db, orders, expenses, data),
+    }
 
-    # ------------------------------------------------ 1 · resumen general
-    output: list[dict] = [
-        blocks.heading("Resumen general",
-                       detail="Totales del conjunto de datos actual, sin filtros."),
-        _kpis(orders, expenses, data, findings),
-    ]
-
-    # ------------------------------------------ 2 · estadística descriptiva
-    descriptive: list[dict] = []
-    if len(order_amounts) >= 2:
-        descriptive.append(_stats_table("Órdenes", order_amounts, data))
-    if len(expense_amounts) >= 2:
-        descriptive.append(_stats_table("Gastos", expense_amounts, data))
-    feed_table = _numeric_columns_table(db, orders, expenses, data)
-    if descriptive or feed_table:
-        output.append(blocks.heading(
-            "Estadística descriptiva",
-            detail="Tendencia central y dispersión de los montos, en USD equivalente "
-                   "(solo monedas con tasa configurada)."))
-        output.extend(descriptive)
-        if feed_table:
-            output.append(feed_table)
-
-    # ------------------------------------------- 3 · lecturas e inferencias
-    _dispersion_findings(order_amounts, "las órdenes", data, findings)
-    _dispersion_findings(expense_amounts, "los gastos", data, findings)
-    _outlier_findings(orders, order_amounts, data, findings)
-    _pareto_finding(orders, data, findings)
-    _quality_findings(orders, expenses, data, findings)
-
-    if findings:
-        output.append(blocks.heading(
-            "Lecturas e inferencias",
-            detail="Observaciones calculadas sobre los datos: atípicos (regla IQR), "
-                   "concentración (Pareto) y calidad de la información."))
-        output.append(blocks.listing(findings))
-
-    # ------------------------------------------------- 4 · distribuciones
-    chart_blocks = _distribution_charts(db, orders, expenses, data, findings)
-    if chart_blocks:
-        output.append(blocks.heading(
-            "Distribuciones",
-            detail="Cómo se reparten los montos y registros en cada dimensión con "
-                   "información. Las dimensiones de un solo valor no se grafican."))
-        output.extend(chart_blocks)
+    # «Atención» goes under the summary figures: the few things worth a look.
+    if attention:
+        attention.sort(key=lambda item: {"danger": 0, "warning": 1}.get(item["tone"], 2))
+        tabs["resumen"].append(blocks.heading(
+            "Atención", detail="Lo que conviene revisar, calculado sobre los datos."))
+        tabs["resumen"].append(blocks.listing(attention[:5]))
 
     interpretation = _interpretation(data)
     if interpretation:
-        output.append(blocks.heading(
+        tabs["resumen"].append(blocks.heading(
             "Interpretación",
-            detail="Qué significan las cifras anteriores. Redactado por el modelo "
-                   "únicamente sobre los valores ya calculados; los números nunca "
-                   "salen de él."))
-        output.append(interpretation)
+            detail="Redactado por el modelo únicamente sobre los valores ya calculados; "
+                   "los números nunca salen de él."))
+        tabs["resumen"].append(interpretation)
 
     intro = llm.complete(
         NARRATOR_PROMPT, json.dumps(data, ensure_ascii=False, default=str)[:4000],
         temperature=0.2, max_tokens=220, caller="insights")
     if intro:
-        output.insert(0, blocks.text(intro))
+        tabs["resumen"].insert(0, blocks.text(intro))
 
-    return {"blocks": output, "data": data}
+    result_tabs = [{"key": key, "label": label, "detail": detail, "blocks": tabs[key]}
+                   for key, label, detail in TABS if tabs.get(key)]
+    # The flat list (chat, PDF) is the tabs one after another, each titled.
+    flat: list[dict] = []
+    for tab in result_tabs:
+        flat.append(blocks.heading(tab["label"], detail=tab["detail"]))
+        flat.extend(tab["blocks"])
+    return {"blocks": flat, "tabs": result_tabs, "data": data}
 
 
 def _interpretation(data: dict) -> dict | None:
@@ -251,6 +266,10 @@ def _interpretation(data: dict) -> dict | None:
 
 
 # ------------------------------------------------------------------ helpers
+
+def _usd(row) -> float:
+    return finance.usd_eq(row.amount, row.currency) if finance.has_rate(row.currency) else 0.0
+
 
 def _usd_amounts(rows) -> list[float]:
     return sorted(finance.usd_eq(r.amount, r.currency) for r in rows
@@ -274,102 +293,502 @@ def _date_span(rows) -> tuple[str, str] | None:
     return (dates[0], dates[-1]) if dates else None
 
 
-def _money(usd: float, apart: dict[str, float]) -> str:
-    parts = [usd_compact(usd)] if usd else []
-    parts += [f"{amount_text(total, code)} {code}" for code, total in sorted(apart.items())]
-    return " + ".join(parts) if parts else usd_compact(0)
+def _states(orders) -> list[str]:
+    """The states present, known ones first in reading order."""
+    present = {o.status for o in orders}
+    return [s for s in STATE_ORDER if s in present] + sorted(present - set(STATE_ORDER))
 
 
-# ------------------------------------------------------------- section 1
+def _state_color(state: str) -> str:
+    return charts.STATUS_COLORS.get(state, charts.OTHER_COLOR)
 
-def _kpis(orders, expenses, data: dict, findings: list) -> dict:
-    orders_usd, orders_apart = _split_sums(orders)
-    expenses_usd, expenses_apart = _split_sums(expenses)
-    items = []
+
+def _share(part: float, whole: float) -> float:
+    return part / whole * 100 if whole else 0.0
+
+
+def _humanize(name: str) -> str:
+    """`currency_out` -> «Currency out»: a feed column, readable."""
+    text = re.sub(r"[_\-]+", " ", str(name)).strip()
+    return text[:1].upper() + text[1:] if text else str(name)
+
+
+def _id_like(name: str) -> bool:
+    words = set(re.split(r"[^a-z]+", str(name).lower()))
+    return bool(words & set(ID_HINTS))
+
+
+def _by_state(orders) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for order in orders:
+        entry = out.setdefault(order.status, {"n": 0, "usd": 0.0})
+        entry["n"] += 1
+        entry["usd"] += _usd(order)
+    return out
+
+
+# ------------------------------------------------------------ 1 · resumen
+
+def _summary_tab(orders, expenses, data: dict, attention: list) -> list[dict]:
+    output: list[dict] = []
     if orders:
-        items.append({"label": "Órdenes", "value": integer(len(orders)),
-                      "delta": _money(orders_usd, orders_apart), "positive": True})
+        total_usd, apart = _split_sums(orders)
+        states = _by_state(orders)
+        items = [{"label": "Volumen total", "value": usd_compact(total_usd),
+                  "delta": f"{integer(len(orders))} órdenes · todos los estados",
+                  "tone": "neutral"}]
+        for state in _states(orders):
+            entry = states[state]
+            items.append({
+                "label": STATE_PLURAL.get(state, status_label(state)),
+                "value": usd_compact(entry["usd"]),
+                "delta": f"{integer(entry['n'])} órdenes · "
+                         f"{percent(_share(entry['usd'], total_usd))} del volumen",
+                "tone": {"approved": "success", "pending": "warning",
+                         "rejected": "danger"}.get(state, "neutral")})
+        output.append(blocks.kpis(items))
+
+        approved = states.get("approved", {"n": 0, "usd": 0.0})
+        rate = _share(approved["n"], len(orders))
+        amounts = _usd_amounts(orders)
+        customers = {o.customer for o in orders if o.customer}
+        span = _date_span(orders)
+        second = [
+            {"label": "Tasa de aprobación", "value": percent(rate),
+             "delta": f"{integer(approved['n'])} de {integer(len(orders))} órdenes",
+             "tone": "success" if rate >= 50 else "danger"},
+            {"label": "Ticket típico", "value": usd_compact(median(amounts)) if amounts else "—",
+             "delta": "mediana por orden", "tone": "neutral"},
+            {"label": "Clientes", "value": integer(len(customers)),
+             "delta": "con al menos una orden", "tone": "neutral"},
+        ]
+        if span:
+            second.append({"label": "Período de los datos",
+                           "value": f"{_month_short(span[0])} – {_month_short(span[1])}",
+                           "delta": f"{span[0]} a {span[1]}", "tone": "neutral"})
+        if expenses:
+            expenses_usd, _ = _split_sums(expenses)
+            second.append({"label": "Gastos", "value": usd_compact(expenses_usd),
+                           "delta": f"{integer(len(expenses))} registrados", "tone": "neutral"})
+        output.append(blocks.kpis(second))
+
+        rejected = states.get("rejected", {"n": 0, "usd": 0.0})
+        if rejected["n"] and _share(rejected["n"], len(orders)) >= 30:
+            attention.append({
+                "title": f"{percent(_share(rejected['n'], len(orders)))} de las órdenes "
+                         "fueron rechazadas",
+                "detail": f"{integer(rejected['n'])} órdenes por {usd_compact(rejected['usd'])} "
+                          "no se completaron. Revise en Operación y Clientes de dónde vienen.",
+                "tone": "danger"})
+        pending = states.get("pending", {"n": 0, "usd": 0.0})
+        if pending["n"] and _share(pending["n"], len(orders)) >= 10:
+            attention.append({
+                "title": f"{integer(pending['n'])} órdenes siguen pendientes",
+                "detail": f"{usd_compact(pending['usd'])} esperan una resolución.",
+                "tone": "warning"})
+        for code, value in apart.items():
+            attention.append({
+                "title": f"{amount_text(value, code)} {code} sin tasa de cambio",
+                "detail": f"No hay tasa configurada para {code}: esas órdenes se cuentan "
+                          "pero no se suman en USD.", "tone": "warning"})
+
+        data["totales"] = {
+            "ordenes": {"n": len(orders), "usd": round(total_usd, 2), "sin_tasa": apart},
+            "por_estado": {status_label(k): {"n": v["n"], "usd": round(v["usd"], 2)}
+                           for k, v in states.items()},
+            "tasa_aprobacion_pct": round(rate, 1),
+            "ticket_mediana_usd": round(median(amounts), 2) if amounts else None,
+            "clientes": len(customers),
+            "rango_fechas": span,
+        }
     if expenses:
-        items.append({"label": "Gastos", "value": integer(len(expenses)),
-                      "delta": _money(expenses_usd, expenses_apart), "positive": False})
-    if orders and expenses and (orders_usd or expenses_usd):
-        balance = orders_usd - expenses_usd
-        items.append({"label": "Balance (solo convertible)", "value": usd_compact(balance),
-                      "delta": "órdenes − gastos", "positive": balance >= 0})
+        expenses_usd, expenses_apart = _split_sums(expenses)
+        data.setdefault("totales", {})["gastos"] = {
+            "n": len(expenses), "usd": round(expenses_usd, 2), "sin_tasa": expenses_apart}
+        if not orders:
+            output.append(blocks.kpis([{"label": "Gastos", "value": usd_compact(expenses_usd),
+                                        "delta": f"{integer(len(expenses))} registrados",
+                                        "tone": "neutral"}]))
+    return output
 
-    span = _date_span(list(orders) + list(expenses))
-    if span:
-        label = span[0] if span[0] == span[1] else f"{span[0]} → {span[1]}"
-        items.append({"label": "Rango de fechas", "value": label, "delta": "", "positive": True})
-        if span[0] == span[1]:
-            findings.append({
-                "title": f"Todos los registros datan del {span[0]}",
-                "detail": "Suele ser la fecha de importación, no la del movimiento: "
-                          "el feed no traía fecha propia.", "tone": "warning"})
 
-    data["totales"] = {
-        "ordenes": {"n": len(orders), "usd": round(orders_usd, 2), "sin_tasa": orders_apart},
-        "gastos": {"n": len(expenses), "usd": round(expenses_usd, 2), "sin_tasa": expenses_apart},
-        "rango_fechas": span,
-    }
-    for entity, apart in (("órdenes", orders_apart), ("gastos", expenses_apart)):
+MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun",
+                "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _month_short(iso: str) -> str:
+    """"2026-09-22" -> «sep 2026»."""
+    try:
+        return f"{MONTHS_SHORT[int(iso[5:7]) - 1]} {iso[:4]}"
+    except (ValueError, IndexError):
+        return iso
+
+
+# ---------------------------------------------------------- 2 · tendencia
+
+def _bucket(iso: str, weekly: bool) -> str:
+    if not weekly:
+        return iso[:7]
+    day = datetime.strptime(iso[:10], "%Y-%m-%d")
+    monday = day.toordinal() - day.weekday()
+    return datetime.fromordinal(monday).strftime("%Y-%m-%d")
+
+
+def _bucket_label(key: str, weekly: bool) -> str:
+    if weekly:
+        return f"{key[8:10]} {MONTHS_SHORT[int(key[5:7]) - 1]}"
+    return f"{MONTHS_SHORT[int(key[5:7]) - 1]} {key[2:4]}"
+
+
+def _trend_tab(orders, data: dict) -> list[dict]:
+    dated = [o for o in orders if o.date and len(o.date) >= 10]
+    span = _date_span(dated)
+    if not span or span[0] == span[1]:
+        return [blocks.notice("Las órdenes no tienen fechas distintas: no hay evolución "
+                              "que mostrar.", tone="info")] if orders else []
+    first = datetime.strptime(span[0][:10], "%Y-%m-%d")
+    last = datetime.strptime(span[1][:10], "%Y-%m-%d")
+    weekly = (last - first).days <= 92
+    unit = "semana" if weekly else "mes"
+
+    buckets: dict[str, dict[str, dict]] = defaultdict(dict)
+    for order in dated:
+        key = _bucket(order.date, weekly)
+        entry = buckets[key].setdefault(order.status, {"n": 0, "usd": 0.0})
+        entry["n"] += 1
+        entry["usd"] += _usd(order)
+    keys = sorted(buckets)
+    states = _states(dated)
+
+    shown = keys[-18:]
+    series = []
+    for key in shown:
+        total = sum(v["usd"] for v in buckets[key].values())
+        series.append({
+            "label": _bucket_label(key, weekly),
+            "display": usd_compact(total).replace("USD ", ""),
+            "parts": [{"name": STATE_PLURAL.get(s, status_label(s)),
+                       "value": round(buckets[key].get(s, {"usd": 0.0})["usd"], 2),
+                       "color": _state_color(s)} for s in states],
+        })
+    output = [blocks.chart(
+        charts.render("stacked", series, width=WIDE_W, height=380),
+        title=f"Volumen por {unit} (USD), separado por estado",
+        chart_type="stacked",
+        # The PDF redraws the totals per period as a line.
+        series=[{"label": point["label"],
+                 "value": round(sum(p["value"] for p in point["parts"]), 2),
+                 "display": usd_compact(sum(p["value"] for p in point["parts"]))}
+                for point in series])]
+    output[0]["wide"] = True
+    if len(keys) > len(shown):
+        output.append(blocks.notice(
+            f"El gráfico muestra los últimos {len(shown)} períodos; la tabla tiene todos.",
+            tone="info"))
+
+    rows = []
+    for key in reversed(keys):
+        entry = buckets[key]
+        n = sum(v["n"] for v in entry.values())
+        usd = sum(v["usd"] for v in entry.values())
+        approved = entry.get("approved", {"n": 0, "usd": 0.0})
+        row = {"periodo": (f"Semana del {_bucket_label(key, True)} {key[:4]}" if weekly
+                           else f"{MONTHS_SHORT[int(key[5:7]) - 1].capitalize()} {key[:4]}"),
+               "ordenes": integer(n), "volumen": usd_compact(usd),
+               "aprobado": usd_compact(approved["usd"]),
+               "tasa": percent(_share(approved["n"], n))}
+        for state in states:
+            row[state] = integer(entry.get(state, {"n": 0})["n"])
+        rows.append(row)
+    columns = [{"key": "periodo", "label": "Período"},
+               {"key": "ordenes", "label": "Órdenes", "align": "right"}]
+    columns += [{"key": s, "label": STATE_PLURAL.get(s, status_label(s)), "align": "right"}
+                for s in states]
+    columns += [{"key": "tasa", "label": "Tasa aprobación", "align": "right"},
+                {"key": "volumen", "label": "Volumen", "align": "right"},
+                {"key": "aprobado", "label": "Aprobado", "align": "right"}]
+    output.append(blocks.table(columns=columns, rows=rows, wide=True,
+                               caption=f"Detalle por {unit}, del más reciente al más antiguo."))
+    data["tendencia"] = [{"periodo": k, "n": sum(v["n"] for v in buckets[k].values()),
+                          "usd": round(sum(v["usd"] for v in buckets[k].values()), 2)}
+                         for k in keys[-12:]]
+    return output
+
+
+# ----------------------------------------------------------- 3 · clientes
+
+def _clients_tab(orders, data: dict, attention: list) -> list[dict]:
+    by_client: dict[str, dict] = {}
+    for order in orders:
+        if not order.customer:
+            continue
+        entry = by_client.setdefault(order.customer, {"n": 0, "usd": 0.0, "approved_n": 0,
+                                                      "approved_usd": 0.0, "rejected_n": 0})
+        entry["n"] += 1
+        entry["usd"] += _usd(order)
+        if order.status == "approved":
+            entry["approved_n"] += 1
+            entry["approved_usd"] += _usd(order)
+        elif order.status == "rejected":
+            entry["rejected_n"] += 1
+    if len(by_client) < 2:
+        return []
+    ranked = sorted(by_client.items(), key=lambda item: (item[1]["usd"], item[1]["n"]),
+                    reverse=True)
+    total = sum(v["usd"] for v in by_client.values()) or 1
+
+    output = []
+    top = ranked[:10]
+    output.append(blocks.chart(
+        charts.render("hbar", width=WIDE_W, series=[{"label": name[:24], "value": round(v["usd"], 2),
+                                "display": f"{usd_compact(v['usd'])} · "
+                                           f"{percent(_share(v['usd'], total))}"}
+                               for name, v in top]),
+        title="Los 10 clientes con más volumen (USD, todos los estados)",
+        chart_type="hbar",
+        series=[{"label": name[:28], "value": round(v["usd"], 2),
+                 "display": usd_compact(v["usd"])} for name, v in top]))
+    output[-1]["wide"] = True
+
+    rows = []
+    for name, v in ranked[:TOP_CLIENTS]:
+        rows.append({"cliente": name, "ordenes": integer(v["n"]),
+                     "volumen": usd_compact(v["usd"]),
+                     "participacion": percent(_share(v["usd"], total)),
+                     "aprobado": usd_compact(v["approved_usd"]),
+                     "rechazadas": integer(v["rejected_n"]),
+                     "tasa": percent(_share(v["approved_n"], v["n"]))})
+    output.append(blocks.table(
+        columns=[{"key": "cliente", "label": "Cliente"},
+                 {"key": "ordenes", "label": "Órdenes", "align": "right"},
+                 {"key": "volumen", "label": "Volumen", "align": "right"},
+                 {"key": "participacion", "label": "% del total", "align": "right"},
+                 {"key": "aprobado", "label": "Aprobado", "align": "right"},
+                 {"key": "rechazadas", "label": "Rechazadas", "align": "right"},
+                 {"key": "tasa", "label": "Tasa aprobación", "align": "right"}],
+        rows=rows, wide=True,
+        caption=(f"Los {len(rows)} clientes con más volumen de {integer(len(by_client))}."
+                 if len(by_client) > len(rows) else None)))
+
+    # Concentration: how few clients make 80 % of the volume.
+    running, needed = 0.0, 0
+    for _, v in ranked:
+        running += v["usd"]
+        needed += 1
+        if running >= total * 0.8:
+            break
+    leader_name, leader = ranked[0]
+    leader_share = _share(leader["usd"], total)
+    if leader_share >= 40:
+        attention.append({
+            "title": f"{leader_name} es el {percent(leader_share)} del volumen",
+            "detail": f"Un solo cliente concentra {usd_compact(leader['usd'])}; si se va o "
+                      "falla, el volumen cae en esa proporción.", "tone": "warning"})
+    elif len(ranked) >= 5 and needed / len(ranked) <= 0.2:
+        attention.append({
+            "title": f"{integer(needed)} de {integer(len(ranked))} clientes hacen el 80% del volumen",
+            "detail": "El negocio depende de pocos clientes.", "tone": "info"})
+    data["clientes"] = {"total": len(ranked), "para_80_pct": needed,
+                        "top": [{"cliente": n, "n": v["n"], "usd": round(v["usd"], 2),
+                                 "tasa_aprobacion_pct": round(_share(v["approved_n"], v["n"]), 1)}
+                                for n, v in ranked[:5]]}
+    return output
+
+
+# ---------------------------------------------------------- 4 · operación
+
+def _dimension(rows, value_fn) -> list[tuple[str, int, float]]:
+    """[(value, count, usd_sum)] sorted by weight (usd first, count as tiebreak)."""
+    counts: Counter = Counter()
+    sums: dict[str, float] = defaultdict(float)
+    for row in rows:
+        value = value_fn(row)
+        value = str(value).strip()[:40] if value not in (None, "") else None
+        if value is None:
+            continue
+        counts[value] += 1
+        sums[value] += _usd(row)
+    return sorted(((v, counts[v], round(sums[v], 2)) for v in counts),
+                  key=lambda item: (item[2], item[1]), reverse=True)
+
+
+def _dimension_chart(title: str, entries, dominant: list, data: dict, key: str,
+                     colors: dict | None = None, noun: str = "órdenes") -> dict | None:
+    """One horizontal bar chart per dimension; a dimension that is one value is
+    said in a sentence instead (a 99.8 % pie tells nothing)."""
+    if len(entries) < 2:
+        return None
+    count_total = sum(c for _, c, _ in entries) or 1
+    top_value, top_count, _ = entries[0]
+    if top_count / count_total >= DOMINANT:
+        dominant.append(f"{title}: «{top_value}» en el {percent(_share(top_count, count_total))} "
+                        f"de los registros")
+        return None
+    by_usd = any(u > 0 for _, _, u in entries)
+    shown = entries[:10]
+    series = [{"label": v[:24], "value": u if by_usd else c,
+               "display": (f"{integer(c)} · {usd_compact(u)}" if by_usd else integer(c)),
+               "color": (colors or {}).get(v)} for v, c, u in shown]
+    data[key] = [{"valor": v, "n": c, "usd": u} for v, c, u in shown]
+    return blocks.chart(
+        charts.render("hbar", series),
+        title=f"{title} — {noun} · {'volumen USD' if by_usd else 'cantidad'}",
+        chart_type="hbar",
+        series=[{"label": p["label"], "value": p["value"], "display": p["display"]}
+                for p in series])
+
+
+def _operation_tab(db: Session, orders, expenses, data: dict, attention: list) -> list[dict]:
+    output: list[dict] = []
+    dominant: list[str] = []
+    if orders:
+        state_entries = [(status_label(s), v["n"], round(v["usd"], 2))
+                         for s, v in _by_state(orders).items()]
+        state_entries.sort(key=lambda e: (e[2], e[1]), reverse=True)
+        colors = {status_label(s): _state_color(s) for s in STATE_ORDER}
+        chart = _dimension_chart("Por estado", state_entries, dominant, data,
+                                 "ordenes_estado", colors)
+        if chart:
+            output.append(chart)
+
+        amounts = [_usd(o) for o in orders if finance.has_rate(o.currency)]
+        if len(amounts) >= 4:
+            sizes = []
+            for low, high, label in SIZE_BUCKETS:
+                inside = [a for a in amounts if low <= a < high]
+                if inside:
+                    sizes.append({"label": label, "value": len(inside),
+                                  "display": f"{integer(len(inside))} · {usd_compact(sum(inside))}"})
+            if len(sizes) >= 2:
+                output.append(blocks.chart(
+                    charts.render("hbar", sizes),
+                    title="Tamaño de las órdenes — cantidad · volumen USD",
+                    chart_type="hbar",
+                    series=[{**p, "display": p["display"]} for p in sizes]))
+                data["tamanos"] = [{"rango": p["label"], "n": p["value"]} for p in sizes]
+
+        for title, fn, key in (("Por pasarela", lambda o: o.gateway, "ordenes_pasarela"),
+                               ("Por moneda", lambda o: o.currency, "ordenes_moneda")):
+            chart = _dimension_chart(title, _dimension(orders, fn), dominant, data, key)
+            if chart:
+                output.append(chart)
+
+        for column in db.scalars(select(CustomColumn)
+                                 .where(CustomColumn.entity == "orders")).all():
+            if column.data_type == "formula" or _id_like(column.key):
+                continue
+            values = [(o.extra or {}).get(column.key) for o in orders
+                      if isinstance(o.extra, dict)]
+            values = [v for v in values if v not in (None, "")
+                      and (isinstance(v, bool) or not isinstance(v, (int, float)))]
+            if len(values) < 2 or not 2 <= len(set(map(str, values))) <= MAX_CATEGORICAL:
+                continue
+            chart = _dimension_chart(
+                f"Por {_humanize(column.label).lower()}",
+                _dimension(orders, lambda o, k=column.key: (o.extra or {}).get(k)
+                           if isinstance(o.extra, dict) else None),
+                dominant, data, f"orders_{column.key}")
+            if chart:
+                output.append(chart)
+
+    if len(expenses) >= 2:
+        for title, fn, key in (("Gastos por categoría", lambda e: e.category, "gastos_categoria"),
+                               ("Gastos por proveedor", lambda e: e.vendor, "gastos_proveedor")):
+            chart = _dimension_chart(title, _dimension(expenses, fn), dominant, data, key,
+                                     noun="gastos")
+            if chart:
+                output.append(chart)
+
+    if dominant:
+        output.append(blocks.listing(
+            [{"title": line, "detail": "", "tone": "info"} for line in dominant],
+            title="Dimensiones con un valor dominante (no se grafican)"))
+    # Charts pair two by two on wide screens: a lone last chart takes the row.
+    charts_out = [b for b in output if b["type"] == "chart"]
+    if len(charts_out) % 2 == 1:
+        charts_out[-1]["wide"] = True
+    return output
+
+
+# --------------------------------------------------------------- 5 · datos
+
+def _data_tab(db: Session, orders, expenses, data: dict) -> list[dict]:
+    output: list[dict] = []
+    notes: list[dict] = []
+
+    imported = sum(1 for row in list(orders) + list(expenses)
+                   if isinstance(row.extra, dict) and str(row.extra.get("source", "")) == "api")
+    manual = len(orders) + len(expenses) - imported
+    notes.append({"title": f"{integer(imported)} registros vienen de la fuente sincronizada",
+                  "detail": f"{integer(manual)} registrados a mano o importados de Excel.",
+                  "tone": "info"})
+    missing = sum(1 for e in expenses if not e.receipt_url and not e.receipt_name)
+    if missing:
+        notes.append({"title": f"{integer(missing)} gastos sin comprobante",
+                      "detail": "Pídale al chat «gastos sin comprobante» para verlos.",
+                      "tone": "warning"})
+        data["gastos_sin_comprobante"] = missing
+    for entity, rows in (("órdenes", orders), ("gastos", expenses)):
+        _, apart = _split_sums(rows)
         for code, total in apart.items():
-            findings.append({
-                "title": f"{amount_text(total, code)} {code} en {entity} fuera de los totales USD",
-                "detail": f"No hay tasa configurada para {code}; el monto se conserva "
-                          "exacto pero no se convierte.", "tone": "warning"})
-    return blocks.kpis(items)
+            notes.append({"title": f"{amount_text(total, code)} {code} en {entity} sin tasa USD",
+                          "detail": f"Configure una tasa para {code} si debe sumarse.",
+                          "tone": "warning"})
+    span = _date_span(list(orders) + list(expenses))
+    if span and span[0] == span[1]:
+        notes.append({"title": f"Todos los registros datan del {span[0]}",
+                      "detail": "Suele ser la fecha de importación: la fuente no traía fecha.",
+                      "tone": "warning"})
+    data["origen"] = {"importados": imported, "manuales": manual}
+    output.append(blocks.listing(notes, title="Origen y calidad"))
 
+    for label, rows in (("Órdenes", orders), ("Gastos", expenses)):
+        amounts = _usd_amounts(rows)
+        if len(amounts) >= 4:
+            output.append(_stats_table(label, amounts, data))
+    feed_table = _numeric_columns_table(db, orders, expenses, data)
+    if feed_table:
+        output.append(feed_table)
+    return output
 
-# ------------------------------------------------------------- section 2
 
 def _stats_table(label: str, amounts: list[float], data: dict) -> dict:
-    """Classic descriptive statistics of the USD-equivalent amounts."""
-    q1, q2, q3 = quantiles(amounts, n=4) if len(amounts) >= 4 else (
-        amounts[0], median(amounts), amounts[-1])
+    """The usual statistics of the USD amounts, for whoever wants them."""
+    q1, q2, q3 = quantiles(amounts, n=4)
     avg = mean(amounts)
-    deviation = stdev(amounts) if len(amounts) >= 2 else 0.0
-    cv = (deviation / avg * 100) if avg else 0.0
-
     stats = [
-        ("Registros (convertibles)", integer(len(amounts))),
+        ("Registros con tasa USD", integer(len(amounts))),
         ("Suma", usd_compact(sum(amounts))),
-        ("Media", usd_compact(avg)),
-        ("Mediana", usd_compact(q2)),
-        ("Desviación estándar", usd_compact(deviation)),
-        ("Coeficiente de variación", percent(cv)),
+        ("Promedio", usd_compact(avg)),
+        ("Mediana (caso típico)", usd_compact(q2)),
         ("Mínimo", usd_compact(amounts[0])),
-        ("Percentil 25", usd_compact(q1)),
-        ("Percentil 75", usd_compact(q3)),
+        ("25 % de las órdenes está por debajo de", usd_compact(q1)),
+        ("75 % de las órdenes está por debajo de", usd_compact(q3)),
         ("Máximo", usd_compact(amounts[-1])),
     ]
     data[f"descriptiva_{label.lower()}"] = {
         "n": len(amounts), "suma": round(sum(amounts), 2), "media": round(avg, 2),
-        "mediana": round(q2, 2), "desv_std": round(deviation, 2), "cv_pct": round(cv, 1),
-        "min": round(amounts[0], 2), "p25": round(q1, 2), "p75": round(q3, 2),
-        "max": round(amounts[-1], 2),
-    }
+        "mediana": round(q2, 2), "min": round(amounts[0], 2), "p25": round(q1, 2),
+        "p75": round(q3, 2), "max": round(amounts[-1], 2)}
     return blocks.table(
         columns=[{"key": "medida", "label": "Medida"},
                  {"key": "valor", "label": "Valor", "align": "right"}],
         rows=[{"medida": name, "valor": value} for name, value in stats],
-        caption=f"{label} · montos en USD equivalente",
-    )
+        caption=f"{label} · montos en USD equivalente, todos los estados")
 
 
 def _numeric_columns_table(db: Session, orders, expenses, data: dict) -> dict | None:
-    """One statistics table for every numeric column the feed brought.
+    """Range and average of every numeric column the feed brought.
 
-    A tile saying «discountedTotal 651.758,23» tells the reader nothing; a row
-    with range and average at least says how the variable behaves. The column
-    keeps its source name — inventing a translation would be inventing.
+    Identifier-like columns (document numbers, phones) are numbers but not
+    quantities — summing them is meaningless, so they are left out.
     """
     rows_out: list[dict] = []
     for entity, rows, entity_label in (("orders", orders, "órdenes"),
                                        ("expenses", expenses, "gastos")):
         for column in db.scalars(
                 select(CustomColumn).where(CustomColumn.entity == entity)).all():
-            if column.data_type == "formula":
+            if column.data_type == "formula" or _id_like(column.key) or _id_like(column.label):
                 continue
             values = [(row.extra or {}).get(column.key) for row in rows
                       if isinstance(row.extra, dict)]
@@ -379,8 +798,7 @@ def _numeric_columns_table(db: Session, orders, expenses, data: dict) -> dict | 
             if len(present) < 2 or len(numeric) < len(present) * 0.6:
                 continue
             rows_out.append({
-                "columna": column.label,
-                "entidad": entity_label,
+                "columna": _humanize(column.label), "entidad": entity_label,
                 "n": integer(len(numeric)),
                 "total": amount_text(sum(numeric), "USD"),
                 "promedio": amount_text(mean(numeric), "USD"),
@@ -388,295 +806,16 @@ def _numeric_columns_table(db: Session, orders, expenses, data: dict) -> dict | 
                 "maximo": amount_text(max(numeric), "USD"),
             })
             data.setdefault("columnas_numericas", {})[column.label] = {
-                "suma": round(sum(numeric), 2), "promedio": round(mean(numeric), 2),
-                "min": round(min(numeric), 2), "max": round(max(numeric), 2)}
+                "suma": round(sum(numeric), 2), "promedio": round(mean(numeric), 2)}
     if not rows_out:
         return None
     return blocks.table(
-        columns=[
-            {"key": "columna", "label": "Columna de la fuente"},
-            {"key": "entidad", "label": "En"},
-            {"key": "n", "label": "Valores", "align": "right"},
-            {"key": "total", "label": "Total", "align": "right"},
-            {"key": "promedio", "label": "Promedio", "align": "right"},
-            {"key": "minimo", "label": "Mínimo", "align": "right"},
-            {"key": "maximo", "label": "Máximo", "align": "right"},
-        ],
-        rows=rows_out,
-        caption="Variables numéricas adicionales que trajo la fuente, con sus "
-                "estadísticos básicos (unidades propias de cada variable).",
-        wide=True,
-    )
-
-
-# ------------------------------------------------------------- section 3
-
-def _dispersion_findings(amounts: list[float], entity_label: str,
-                         data: dict, findings: list) -> None:
-    if len(amounts) < 4:
-        return
-    avg = mean(amounts)
-    if not avg:
-        return
-    cv = stdev(amounts) / avg * 100
-    if cv >= HIGH_CV:
-        findings.append({
-            "title": f"Alta dispersión en los montos de {entity_label} (CV {percent(cv)})",
-            "detail": "Conviven tickets muy pequeños y muy grandes: la media "
-                      f"({usd_compact(avg)}) no representa el caso típico; use la "
-                      f"mediana ({usd_compact(median(amounts))}).", "tone": "info"})
-
-
-def _outlier_findings(orders, amounts: list[float], data: dict, findings: list) -> None:
-    """Tukey's IQR rule: beyond Q3 + 1.5·IQR is atypical, and named."""
-    if len(amounts) < 4:
-        return
-    q1, _, q3 = quantiles(amounts, n=4)
-    fence = q3 + 1.5 * (q3 - q1)
-    outliers = [value for value in amounts if value > fence]
-    if not outliers:
-        return
-    top = max(orders, key=lambda o: finance.usd_eq(o.amount, o.currency))
-    findings.append({
-        "title": f"{integer(len(outliers))} órdenes atípicas por monto (regla IQR)",
-        "detail": f"Por encima de {usd_compact(fence)}. La mayor: {top.id} de "
-                  f"{top.customer} por {amount_text(top.amount, top.currency)} "
-                  f"{top.currency}.", "tone": "warning"})
-    data["atipicos_ordenes"] = {"n": len(outliers), "umbral_usd": round(fence, 2),
-                                "maximo": {"id": top.id, "monto": top.amount,
-                                           "moneda": top.currency}}
-
-
-def _pareto_finding(orders, data: dict, findings: list) -> None:
-    """How few customers explain 80 % of the converted order value."""
-    by_customer: dict[str, float] = defaultdict(float)
-    for order in orders:
-        if finance.has_rate(order.currency) and order.customer:
-            by_customer[order.customer] += finance.usd_eq(order.amount, order.currency)
-    if len(by_customer) < 5:
-        return
-    values = sorted(by_customer.values(), reverse=True)
-    total = sum(values) or 1
-    running, needed = 0.0, 0
-    for value in values:
-        running += value
-        needed += 1
-        if running >= total * 0.8:
-            break
-    share = needed / len(values)
-    if share <= 0.5:
-        findings.append({
-            "title": f"El {round(share * 100)}% de los clientes explica el 80% del monto",
-            "detail": f"{integer(needed)} de {integer(len(values))} clientes concentran "
-                      f"{usd_compact(total * 0.8)} — patrón Pareto.", "tone": "info"})
-        data["pareto_clientes"] = {"clientes": needed, "total_clientes": len(values),
-                                   "participacion_pct": round(share * 100, 1)}
-
-
-def _quality_findings(orders, expenses, data: dict, findings: list) -> None:
-    missing = sum(1 for e in expenses if not e.receipt_url and not e.receipt_name)
-    if missing:
-        findings.append({
-            "title": f"{integer(missing)} gastos sin comprobante",
-            "detail": "Pídale al agente «gastos sin comprobante» para verlos.",
-            "tone": "warning"})
-        data["gastos_sin_comprobante"] = missing
-
-    imported = sum(1 for row in list(orders) + list(expenses)
-                   if isinstance(row.extra, dict) and str(row.extra.get("source", "")) == "api")
-    manual = len(orders) + len(expenses) - imported
-    if imported:
-        findings.append({
-            "title": f"{integer(imported)} registros vienen de la fuente sincronizada",
-            "detail": f"{integer(manual)} registrados a mano." if manual
-            else "Ninguno registrado a mano todavía.", "tone": "info"})
-    data["origen"] = {"importados": imported, "manuales": manual}
-
-
-# ------------------------------------------------------------- section 4
-
-def _dimension(rows, value_fn) -> list[tuple[str, int, float]]:
-    """[(value, count, usd_sum)] sorted by weight (usd first, count as tiebreak)."""
-    counts: Counter = Counter()
-    sums: dict[str, float] = defaultdict(float)
-    for row in rows:
-        value = value_fn(row)
-        value = str(value).strip() if value not in (None, "") else None
-        if value is None:
-            continue
-        counts[value] += 1
-        if finance.has_rate(row.currency):
-            sums[value] += finance.usd_eq(row.amount, row.currency)
-    return sorted(((v, counts[v], round(sums[v], 2)) for v in counts),
-                  key=lambda item: (item[2], item[1]), reverse=True)
-
-
-def _chart_for(title: str, entries: list[tuple[str, int, float]],
-               data: dict, data_key: str, findings: list,
-               entity_label: str) -> dict | None:
-    """A titled chart when the dimension informs; None when it does not."""
-    if len(entries) < 2:
-        return None
-    by_usd = any(usd > 0 for _, _, usd in entries)
-    series = [{"label": value[:24], "value": usd if by_usd else count}
-              for value, count, usd in entries[:10]]
-    kind = "pie" if len(series) <= MAX_SLICES else "hbar"
-    svg = charts.render(kind, series, title="")
-
-    top_value, top_count, top_usd = entries[0]
-    share = (top_usd if by_usd else top_count) / (
-        sum((usd if by_usd else count) for _, count, usd in entries) or 1)
-    if share >= CONCENTRATION:
-        findings.append({
-            "title": f"«{top_value}» concentra {round(share * 100)}% de {entity_label}",
-            "detail": usd_compact(top_usd) if by_usd else f"{integer(top_count)} registros",
-            "tone": "info"})
-
-    data[data_key] = [{"valor": v, "n": c, "usd": u} for v, c, u in entries[:10]]
-    unit = "USD equivalente" if by_usd else "cantidad de registros (montos no convertibles)"
-    pdf_series = [{"label": value[:28],
-                   "value": usd if by_usd else count,
-                   "display": usd_compact(usd) if by_usd else integer(count)}
-                  for value, count, usd in entries[:10]]
-    return blocks.chart(svg, title=f"{title} — por {unit}", chart_type=kind,
-                        series=pdf_series)
-
-
-def _histogram(amounts: list[float], title: str, data: dict, data_key: str) -> dict | None:
-    """The shape of the amounts: how many fall in each range."""
-    if len(amounts) < 8:
-        return None
-    low, high = amounts[0], amounts[-1]
-    if high <= low:
-        return None
-    bins = 8
-    step = (high - low) / bins
-    counts = [0] * bins
-    for value in amounts:
-        index = min(int((value - low) / step), bins - 1)
-        counts[index] += 1
-    series = [{"label": f"≤{charts._fmt(low + step * (i + 1))}", "value": count}
-              for i, count in enumerate(counts)]
-    data[data_key] = {"bins": [{"hasta": round(low + step * (i + 1), 2), "n": c}
-                               for i, c in enumerate(counts)]}
-    return blocks.chart(charts.render("bar", series, title=""),
-                        title=f"{title} — cantidad de registros por rango de monto (USD)",
-                        chart_type="bar",
-                        series=[{**point, "display": integer(point["value"])}
-                                for point in series])
-
-
-def _box_charts(order_amounts: list[float], expense_amounts: list[float]) -> list[dict]:
-    """The five-number summary, drawn: the visual twin of the stats tables.
-
-    One chart per entity, each with its own scale — sharing one axis squashes
-    the smaller distribution into an unreadable sliver.
-    """
-    output = []
-    for label, amounts in (("órdenes", order_amounts), ("gastos", expense_amounts)):
-        if len(amounts) < 4:
-            continue
-        q1, q2, q3 = quantiles(amounts, n=4)
-        series = [{"label": label.capitalize(), "min": amounts[0], "q1": q1,
-                   "med": q2, "q3": q3, "max": amounts[-1]}]
-        output.append(blocks.chart(
-            charts.render("box", series, title="", height=220),
-            title=f"Diagrama de caja de {label} (USD) — mediana, cuartiles y extremos",
-            chart_type="box"))
-    return output
-
-
-def _timeline(rows, title: str, data: dict, data_key: str) -> dict | None:
-    """Daily totals over time — only when the dates actually vary."""
-    by_date: dict[str, float] = defaultdict(float)
-    for row in rows:
-        if row.date and finance.has_rate(row.currency):
-            by_date[row.date] += finance.usd_eq(row.amount, row.currency)
-    if len(by_date) < 3:
-        return None
-    points = sorted(by_date.items())[-30:]
-    series = [{"label": day[5:], "value": round(total, 2)} for day, total in points]
-    data[data_key] = [{"fecha": d, "usd": round(t, 2)} for d, t in points]
-    return blocks.chart(charts.render("line", series, title=""),
-                        title=f"{title} — total diario en USD equivalente",
-                        chart_type="line",
-                        series=[{**point, "display": usd_compact(point["value"])}
-                                for point in series])
-
-
-def _distribution_charts(db: Session, orders, expenses, data: dict,
-                         findings: list) -> list[dict]:
-    output: list[dict] = []
-
-    order_amounts = _usd_amounts(orders)
-    expense_amounts = _usd_amounts(expenses)
-
-    # La forma primero: caja, histogramas y evolución; el reparto después.
-    output.extend(_box_charts(order_amounts, expense_amounts))
-    for amounts, title, key in ((order_amounts, "Histograma de órdenes", "hist_ordenes"),
-                                (expense_amounts, "Histograma de gastos", "hist_gastos")):
-        hist = _histogram(amounts, title, data, key)
-        if hist:
-            output.append(hist)
-    for rows, title, key in ((orders, "Evolución de órdenes", "serie_ordenes"),
-                             (expenses, "Evolución de gastos", "serie_gastos")):
-        line = _timeline(rows, title, data, key)
-        if line:
-            output.append(line)
-
-    for title, fn, key in (
-        ("Órdenes por estado", lambda o: status_label(o.status), "ordenes_estado"),
-        ("Órdenes por pasarela", lambda o: o.gateway, "ordenes_pasarela"),
-        ("Órdenes por moneda", lambda o: o.currency, "ordenes_moneda"),
-        ("Top clientes", lambda o: o.customer, "ordenes_clientes"),
-    ):
-        chart = _chart_for(title, _dimension(orders, fn), data, key, findings, "las órdenes")
-        if chart:
-            output.append(chart)
-
-    for title, fn, key in (
-        ("Gastos por categoría", lambda e: e.category, "gastos_categoria"),
-        ("Gastos por proveedor", lambda e: e.vendor, "gastos_proveedor"),
-        ("Gastos por responsable", lambda e: e.owner, "gastos_responsable"),
-        ("Gastos por moneda", lambda e: e.currency, "gastos_moneda"),
-    ):
-        chart = _chart_for(title, _dimension(expenses, fn), data, key, findings, "los gastos")
-        if chart:
-            output.append(chart)
-
-    for entity, rows, label in (("orders", orders, "Órdenes"), ("expenses", expenses, "Gastos")):
-        output.extend(_categorical_column_charts(db, entity, rows, data, findings, label))
-
-    # The layout pairs charts two by two: an odd count leaves a hole. Charts
-    # are emitted in priority order (shape first, native dimensions, then feed
-    # columns), so evening out means dropping the least critical tail — and
-    # saying so in the data instead of hiding it.
-    if len(output) > 1 and len(output) % 2 == 1:
-        dropped = output.pop()
-        data["grafica_omitida_por_paridad"] = dropped.get("title", "")
-    return output
-
-
-def _categorical_column_charts(db: Session, entity: str, rows, data: dict,
-                               findings: list, entity_label: str) -> list[dict]:
-    """Distribution charts for the categorical columns the feed brought."""
-    output: list[dict] = []
-    for column in db.scalars(select(CustomColumn).where(CustomColumn.entity == entity)).all():
-        if column.data_type == "formula":
-            continue
-        values = [(row.extra or {}).get(column.key) for row in rows
-                  if isinstance(row.extra, dict)]
-        values = [v for v in values
-                  if v not in (None, "")
-                  and (isinstance(v, bool) or not isinstance(v, (int, float)))]
-        if len(values) < 2:
-            continue
-        distinct = Counter(str(v)[:40] for v in values)
-        if 2 <= len(distinct) <= MAX_CATEGORICAL:
-            entries = [(value, count, 0.0) for value, count in distinct.most_common()]
-            chart = _chart_for(f"{entity_label} por {column.label} (columna del feed)",
-                               entries, data, f"{entity}_{column.key}", findings,
-                               entity_label.lower())
-            if chart:
-                output.append(chart)
-    return output
+        columns=[{"key": "columna", "label": "Columna de la fuente"},
+                 {"key": "entidad", "label": "En"},
+                 {"key": "n", "label": "Valores", "align": "right"},
+                 {"key": "total", "label": "Total", "align": "right"},
+                 {"key": "promedio", "label": "Promedio", "align": "right"},
+                 {"key": "minimo", "label": "Mínimo", "align": "right"},
+                 {"key": "maximo", "label": "Máximo", "align": "right"}],
+        rows=rows_out, wide=True,
+        caption="Otras cifras que trae la fuente, en sus propias unidades.")

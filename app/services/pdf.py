@@ -356,8 +356,10 @@ def analysis_report(title: str, subtitle: str, blocks: list[dict]) -> bytes:
         elif kind == "notice":
             story.append(Paragraph(escape(block["content"]), SMALL))
         elif kind == "kpis" and block.get("items"):
-            story.append(Spacer(0, 6))
-            story.append(_kpi_cards(block["items"][:4]))
+            # Four cards per row; a fifth state starts a new row, never dropped.
+            for start in range(0, len(block["items"]), 4):
+                story.append(Spacer(0, 6))
+                story.append(_kpi_cards(block["items"][start:start + 4]))
         elif kind == "table" and block.get("rows"):
             columns = block["columns"]
             rows = [[str(row.get(col["key"], "")) for col in columns]
