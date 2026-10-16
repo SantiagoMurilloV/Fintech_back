@@ -6,9 +6,10 @@ import io
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from ..config import FX_TO_USD
 from ..database import get_db
 from ..models import CURRENCIES, GATEWAYS, ORDER_STATUSES, CustomColumn, Order
 from ..services import columns as columns_service
@@ -69,17 +70,69 @@ def _search(db: Session, custom: list[CustomColumn], q, status, filters,
         raise HTTPException(status_code=400, detail=str(err)) from None
 
 
+def _usd_expression():
+    """The amount in USD inside SQL, with the same rates as finance.usd_eq.
+
+    A currency without a rate is worth zero here too, so sorting by amount
+    agrees with every USD total the panel shows.
+    """
+    rate = case({code: value for code, value in FX_TO_USD.items()},
+                value=func.upper(Order.currency), else_=0.0)
+    return Order.amount * rate
+
+
+# sort key -> ORDER BY. Every key ends on the id so a page never reshuffles.
+SORTS = {
+    "date_desc": lambda: (Order.date.desc(), Order.id.desc()),
+    "date_asc": lambda: (Order.date.asc(), Order.id.asc()),
+    "amount_desc": lambda: (_usd_expression().desc(), Order.id.desc()),
+    "amount_asc": lambda: (_usd_expression().asc(), Order.id.asc()),
+    "customer_asc": lambda: (func.lower(Order.customer).asc(), Order.date.desc(), Order.id.desc()),
+    "customer_desc": lambda: (func.lower(Order.customer).desc(), Order.date.desc(), Order.id.desc()),
+    "status_asc": lambda: (Order.status.asc(), Order.date.desc(), Order.id.desc()),
+    "status_desc": lambda: (Order.status.desc(), Order.date.desc(), Order.id.desc()),
+}
+
+
+def _summary(db: Session, where: list) -> dict:
+    """Totals of everything the filters select, not only the page on screen."""
+    rows = db.execute(
+        select(func.upper(Order.currency), func.count(Order.id), func.sum(Order.amount))
+        .where(*where).group_by(func.upper(Order.currency))).all()
+    usd, unrated, by_currency = 0.0, 0, []
+    for currency, count, amount in rows:
+        rate = FX_TO_USD.get(currency or "USD")
+        if rate is None:
+            unrated += count
+        else:
+            usd += (amount or 0.0) * rate
+        by_currency.append({"currency": currency, "count": count, "amount": round(amount or 0.0, 2)})
+    first, last = db.execute(select(func.min(Order.date), func.max(Order.date)).where(*where)).one()
+    return {
+        "count": sum(item["count"] for item in by_currency),
+        "usd": round(usd, 2), "unrated": unrated,
+        "by_currency": sorted(by_currency, key=lambda item: -item["count"]),
+        "first_date": first, "last_date": last,
+    }
+
+
 @router.get("/api/orders")
 def list_orders(status: str | None = None, q: str | None = None, filters: str | None = None,
                 date_from: str | None = None, date_to: str | None = None,
-                limit: int = 25, offset: int = 0, db: Session = Depends(get_db)):
+                sort: str = "date_desc", limit: int = 25, offset: int = 0,
+                db: Session = Depends(get_db)):
     """One page of orders plus everything the table needs to filter them.
 
     `q` searches every field of the row; `filters` is a JSON object
     {column: value | [values]} over base or feed columns; `facets` in the
     response lists, per column, the values that exist and how many rows each
-    one would give.
+    one would give. `sort` orders the whole selection (see SORTS) and
+    `summary` totals it, so a person can reach the largest orders of a
+    period without paging through a thousand rows.
     """
+    if sort not in SORTS:
+        raise HTTPException(status_code=400,
+                            detail=f"sort debe ser uno de: {', '.join(SORTS)}.")
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
     custom = columns_service.list_columns(db, "orders")
@@ -87,12 +140,12 @@ def list_orders(status: str | None = None, q: str | None = None, filters: str | 
     where = search.where()
     total = db.scalar(select(func.count(Order.id)).where(*where))
     items = db.scalars(
-        select(Order).where(*where)
-        .order_by(Order.date.desc(), Order.id.desc()).limit(limit).offset(offset)
+        select(Order).where(*where).order_by(*SORTS[sort]()).limit(limit).offset(offset)
     ).all()
     return {
         "items": [order_view(o, custom) for o in items],
-        "total": total, "limit": limit, "offset": offset,
+        "total": total, "limit": limit, "offset": offset, "sort": sort,
+        "summary": _summary(db, where),
         "filtered": search.active,
         "facets": search.facets(db),
         "period": finance.current_period(db),
@@ -163,13 +216,14 @@ def update_order(order_id: str, body: OrderPatch, db: Session = Depends(get_db))
 @router.get("/api/orders/export.csv")
 def export_csv(status: str | None = None, q: str | None = None, filters: str | None = None,
                date_from: str | None = None, date_to: str | None = None,
-               db: Session = Depends(get_db)):
+               sort: str = "date_desc", db: Session = Depends(get_db)):
     """CSV is a data export, so it lives in the backend. It honours the same
-    search and filters as the table: what is exported is what is on screen."""
+    search, filters and order as the table: what is exported is what is on
+    screen."""
     custom = columns_service.list_columns(db, "orders")
     search = _search(db, custom, q, status, filters, date_from, date_to)
     rows = db.scalars(select(Order).where(*search.where())
-                      .order_by(Order.date.desc(), Order.id.desc())).all()
+                      .order_by(*SORTS.get(sort, SORTS["date_desc"])())).all()
     buf = io.StringIO()
     buf.write("id,customer,amount,currency,status,source_status,gateway,date\n")
     for o in rows:
