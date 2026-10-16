@@ -138,12 +138,12 @@ def _hbars(series: list[dict], width: int, height: int) -> str:
         color = point.get("color") or SERIES_COLORS[0]
         parts.append(f'<rect x="{left}" y="{y:.1f}" width="{max(bar_w, 2):.1f}" height="{bar_h:.1f}" '
                      f'rx="4" fill="{color}"/>')
-        parts.append(_text(left - 12, y + bar_h / 2 + 5, point["label"], size=15, anchor="end"))
+        parts.append(_text(left - 12, y + bar_h / 2 + 6, point["label"], size=17, anchor="end"))
         # A long figure («733 · USD 456,7 k») moves inside a bar that fills the row.
         label = _label(point)
-        inside = bar_w > plot_w - 9 * len(label)
+        inside = bar_w > plot_w - 10 * len(label)
         parts.append(_text(left + bar_w - 10 if inside else left + bar_w + 10,
-                           y + bar_h / 2 + 5, label, size=14,
+                           y + bar_h / 2 + 6, label, size=16,
                            anchor="end" if inside else "start", weight="600",
                            fill="#052015" if inside else AXIS_TEXT,
                            role="inside" if inside else "value"))

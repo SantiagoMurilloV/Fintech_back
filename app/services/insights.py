@@ -703,10 +703,9 @@ def _operation_tab(db: Session, orders, expenses, data: dict, attention: list) -
         output.append(blocks.listing(
             [{"title": line, "detail": "", "tone": "info"} for line in dominant],
             title="Dimensiones con un valor dominante (no se grafican)"))
-    # Charts pair two by two on wide screens: a lone last chart takes the row.
-    charts_out = [b for b in output if b["type"] == "chart"]
-    if len(charts_out) % 2 == 1:
-        charts_out[-1]["wide"] = True
+    # Charts pair two by two on wide screens. A lone last chart keeps its
+    # half of the row: stretching a drawing made for half the width would
+    # blow its text up to twice the size of its neighbours'.
     return output
 
 
