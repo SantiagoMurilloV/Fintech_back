@@ -7,7 +7,7 @@ configured — and `chat` never raises, so a model that is down degrades the
 answer instead of breaking the turn.
 
 Provider: Anthropic when ANTHROPIC_API_KEY is set (model CHAT_MODEL, by
-default claude-fable-5-1); otherwise DeepSeek's OpenAI-compatible API when
+default claude-opus-5-5); otherwise DeepSeek's OpenAI-compatible API when
 DEEPSEEK_API_KEY is set; otherwise none, and the agent answers with its
 deterministic summaries only.
 """

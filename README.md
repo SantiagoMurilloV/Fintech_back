@@ -392,7 +392,7 @@ every step, SQL included.
 ## Chat model (Claude)
 
 `services/llm.py` is the one door to the model. With `ANTHROPIC_API_KEY` set
-the chat runs on Claude (`CHAT_MODEL`, default `claude-fable-5-1`); with only
+the chat runs on Claude (`CHAT_MODEL`, default `claude-opus-5-5`); with only
 `DEEPSEEK_API_KEY` it falls back to DeepSeek; with neither, the agent answers
 with its deterministic summaries. `GET /api/health` reports the provider.
 
