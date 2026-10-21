@@ -89,8 +89,10 @@ def chat(system: str, messages: list[dict], *, temperature: float = 0.2,
         return None
     try:
         if CHAT_PROVIDER == "anthropic":
+            # The Anthropic SDK (2.x) takes no sampling parameters: `temperature`
+            # is DeepSeek's only. Sending it made every call fail.
             response = _client.messages.create(
-                model=CHAT_MODEL, max_tokens=max_tokens, temperature=temperature,
+                model=CHAT_MODEL, max_tokens=max_tokens,
                 system=system + (JSON_RULE if json_object else ""),
                 messages=_merge_turns(messages))
             text = "".join(block.text for block in response.content
