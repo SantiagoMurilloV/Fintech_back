@@ -79,7 +79,7 @@ SCHEMA: dict[str, tuple[str, object]] = {
     # Off by default: TradingView's terms restrict automated collection, so
     # switching it on is the operator's decision. Symbols as EXCHANGE:TICKER.
     "tv.enabled": ("bool", False),
-    "tv.watchlist": ("str", "COINBASE:USDTUSD,COINBASE:USDCUSD,COINBASE:BTCUSD,COINBASE:ETHUSD"),
+    "tv.watchlist": ("str", "COINBASE:USDTUSD,KRAKEN:USDCUSD,COINBASE:BTCUSD,COINBASE:ETHUSD"),
     "tv.interval_seconds": ("int", 3600),
 }
 

@@ -48,3 +48,11 @@ def read_tradingview(db: Session = Depends(get_db), _=AdminDep):
 
     symbols = tradingview.parse_watchlist(settings_service.get(db, "tv.watchlist"))
     return tradingview.run(db, symbols)
+
+
+@router.get("/api/rates/tradingview/recipes")
+def tradingview_recipes(db: Session = Depends(get_db)):
+    """How each watchlist symbol is read today: selector, who learned it, health."""
+    from ..services.computer_use import tradingview
+
+    return {"items": tradingview.recipes(db)}
