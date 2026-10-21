@@ -81,14 +81,22 @@ RATES_MIN_INTERVAL = 60
 
 
 def _rates_tick() -> int:
-    """One market-rates snapshot; returns the seconds until the next one."""
+    """One market-rates round when it is due; returns the seconds until the next check.
+
+    «Due» counts from the last stored round, not from boot: a deploy or a
+    reload does not add a round to the three a day.
+    """
     from .services import market_rates
 
     with SessionLocal() as db:
         values = settings_service.all_values(db)
-        interval = max(RATES_MIN_INTERVAL, int(values.get("rates.interval_seconds") or 3600))
-        if values.get("rates.enabled"):
-            market_rates.snapshot(db)
+        interval = max(RATES_MIN_INTERVAL, int(values.get("rates.interval_seconds") or 28800))
+        if not values.get("rates.enabled"):
+            return interval
+        elapsed = market_rates.seconds_since_last(db, market_rates.SPOT_SOURCES)
+        if elapsed is not None and elapsed < interval:
+            return max(60, int(interval - elapsed))
+        market_rates.snapshot(db)
     return interval
 
 
@@ -106,16 +114,21 @@ async def _rates_loop():
 
 
 def _tradingview_tick() -> int:
-    """One computer-use pass over the TradingView watchlist, when switched on."""
+    """One computer-use pass over the TradingView watchlist when on and due."""
+    from .services import market_rates
     from .services.computer_use import tradingview
 
     with SessionLocal() as db:
         values = settings_service.all_values(db)
-        interval = max(600, int(values.get("tv.interval_seconds") or 3600))
-        if values.get("tv.enabled"):
-            symbols = tradingview.parse_watchlist(values.get("tv.watchlist"))
-            if symbols:
-                tradingview.run(db, symbols)
+        interval = max(600, int(values.get("tv.interval_seconds") or 28800))
+        if not values.get("tv.enabled"):
+            return interval
+        elapsed = market_rates.seconds_since_last(db, ("tradingview",))
+        if elapsed is not None and elapsed < interval:
+            return max(60, int(interval - elapsed))
+        symbols = tradingview.parse_watchlist(values.get("tv.watchlist"))
+        if symbols:
+            tradingview.run(db, symbols)
     return interval
 
 

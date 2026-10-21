@@ -1,16 +1,17 @@
 """Market prices, fetched from free public sources and kept as our own copy.
 
-Every tick (hourly by default, `rates.interval_seconds`) the backend calls:
+Three times a day by default (`rates.interval_seconds`, 8 h) the backend calls:
 
-    Kraken     USDT/USD, USDC/USD   live, last trade + bid/ask, no key
-    Coinbase   USDT/USD             live, last trade + bid/ask, no key
-    TRM        USD/COP              official daily rate (Superfinanciera, datos.gov.co)
-    ECB        USD/BRL, USD/MXN,    daily reference rates (Frankfurter)
-               USD/EUR, USD/GBP
+    Binance    every coin quoted in USDT or USDC      one call, ~770 pairs
+    Kraken     every coin quoted in USD, USDT, USDC   one call, ~770 pairs, bid/ask
+    Coinbase   USDT/USD                               live, bid/ask
+    TRM        USD/COP                                official daily rate (datos.gov.co)
+    ECB        USD against 29 currencies              daily reference rates (Frankfurter)
 
-and stores what each one said in `rate_snapshots`. Live sources add a row
-per tick; daily sources add one only when they publish a new day, so the
-table holds a history, not 288 copies of the same TRM.
+and stores what each one said in `rate_snapshots`. Spot sources add a row per
+pair per run; daily sources add one only when they publish a new day. The
+history before the first run comes from `market_history.backfill` (daily
+closes from Binance since each coin was listed, source «binance_1d»).
 
 Each source is fetched on its own: one being down never stops the others,
 and the result says which answered. Nothing here changes how the panel
@@ -30,7 +31,9 @@ from ..models import RateSnapshot
 log = logging.getLogger("rates")
 TIMEOUT = 10.0
 DAILY_SOURCES = {"trm", "ecb"}
-ECB_SYMBOLS = ("BRL", "MXN", "EUR", "GBP")
+QUOTES = ("USD", "USDT", "USDC")      # a coin priced in anything else adds nothing here
+# Kraken's legacy asset codes -> the names everyone else uses.
+KRAKEN_ALIASES = {"XBT": "BTC", "XDG": "DOGE"}
 
 
 def _now() -> str:
@@ -48,17 +51,39 @@ def _float(value) -> float | None:
 # Each returns [{pair, price, bid, ask, rate_date}] or raises.
 
 def fetch_kraken(client: httpx.Client) -> list[dict]:
-    body = client.get("https://api.kraken.com/0/public/Ticker",
-                      params={"pair": "USDTUSD,USDCUSD"}).json()
-    if body.get("error"):
-        raise RuntimeError("; ".join(body["error"]))
-    names = {"USDTZUSD": "USDT/USD", "USDTUSD": "USDT/USD", "USDCUSD": "USDC/USD"}
-    out = []
-    for key, ticker in (body.get("result") or {}).items():
-        if key in names:
-            out.append({"pair": names[key], "price": _float(ticker["c"][0]),
-                        "bid": _float(ticker["b"][0]), "ask": _float(ticker["a"][0])})
+    """Every Kraken pair quoted in USD, USDT or USDC, with bid and ask."""
+    pairs = client.get("https://api.kraken.com/0/public/AssetPairs").json()
+    tickers = client.get("https://api.kraken.com/0/public/Ticker").json()
+    for body in (pairs, tickers):
+        if body.get("error"):
+            raise RuntimeError("; ".join(body["error"]))
+    names = {}
+    for key, info in (pairs.get("result") or {}).items():
+        base, _, quote = str(info.get("wsname") or "").partition("/")
+        if quote in QUOTES and base:
+            names[key] = f"{KRAKEN_ALIASES.get(base, base)}/{quote}"
+    out, seen = [], set()
+    for key, ticker in (tickers.get("result") or {}).items():
+        pair = names.get(key)
+        if not pair or pair in seen:
+            continue
+        seen.add(pair)
+        out.append({"pair": pair, "price": _float(ticker["c"][0]),
+                    "bid": _float(ticker["b"][0]), "ask": _float(ticker["a"][0])})
     return out
+
+
+def fetch_binance(client: httpx.Client) -> list[dict]:
+    """Every Binance coin quoted in USDT or USDC, last price."""
+    info = client.get("https://api.binance.com/api/v3/exchangeInfo",
+                      params={"permissions": "SPOT", "symbolStatus": "TRADING"}).json()
+    names = {s["symbol"]: f"{s['baseAsset']}/{s['quoteAsset']}"
+             for s in info.get("symbols", []) if s.get("quoteAsset") in QUOTES}
+    prices = client.get("https://api.binance.com/api/v3/ticker/price").json()
+    if not isinstance(prices, list):
+        raise RuntimeError(f"Binance respondió {str(prices)[:120]}")
+    return [{"pair": names[p["symbol"]], "price": _float(p["price"])}
+            for p in prices if p.get("symbol") in names]
 
 
 def fetch_coinbase(client: httpx.Client) -> list[dict]:
@@ -77,14 +102,14 @@ def fetch_trm(client: httpx.Client) -> list[dict]:
 
 
 def fetch_ecb(client: httpx.Client) -> list[dict]:
-    body = client.get("https://api.frankfurter.dev/v1/latest",
-                      params={"base": "USD", "symbols": ",".join(ECB_SYMBOLS)}).json()
+    body = client.get("https://api.frankfurter.dev/v1/latest", params={"base": "USD"}).json()
     return [{"pair": f"USD/{code}", "price": _float(value), "rate_date": body.get("date")}
             for code, value in (body.get("rates") or {}).items()]
 
 
-FETCHERS = {"kraken": fetch_kraken, "coinbase": fetch_coinbase,
+FETCHERS = {"binance": fetch_binance, "kraken": fetch_kraken, "coinbase": fetch_coinbase,
             "trm": fetch_trm, "ecb": fetch_ecb}
+SPOT_SOURCES = ("binance", "kraken", "coinbase")
 
 
 # ------------------------------------------------------------------ snapshot
@@ -101,8 +126,11 @@ def snapshot(db: Session, fetchers: dict | None = None) -> dict:
                 log.warning("Rates from %s failed: %s", source, err)
                 report[source] = {"ok": False, "error": str(err)[:200]}
                 continue
-            stored = 0
+            stored, done = 0, set()
             for quote in quotes:
+                if quote["pair"] in done:      # a source listing a pair twice keeps the first
+                    continue
+                done.add(quote["pair"])
                 if source in DAILY_SOURCES:
                     seen = db.scalar(select(RateSnapshot.id).where(
                         RateSnapshot.source == source, RateSnapshot.pair == quote["pair"],
@@ -116,6 +144,20 @@ def snapshot(db: Session, fetchers: dict | None = None) -> dict:
             report[source] = {"ok": True, "quotes": len(quotes), "stored": stored}
     db.commit()
     return {"taken_at": taken_at, "sources": report}
+
+
+def seconds_since_last(db: Session, sources: tuple[str, ...]) -> float | None:
+    """How long ago any of `sources` was read, or None if never.
+
+    The schedulers use it so a restart (a deploy, a reload) does not take an
+    extra round: the next run comes when the interval since the LAST run ends.
+    """
+    last = db.scalar(select(func.max(RateSnapshot.taken_at))
+                     .where(RateSnapshot.source.in_(sources)))
+    if not last:
+        return None
+    then = datetime.strptime(last, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).total_seconds()
 
 
 def latest(db: Session) -> list[dict]:

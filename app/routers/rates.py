@@ -56,3 +56,32 @@ def tradingview_recipes(db: Session = Depends(get_db)):
     from ..services.computer_use import tradingview
 
     return {"items": tradingview.recipes(db)}
+
+
+@router.post("/api/rates/backfill")
+def start_backfill(_=AdminDep):
+    """Fill the daily price history (every Binance coin since listing) in the background."""
+    import threading
+
+    from ..database import SessionLocal
+    from ..services import market_history
+
+    if market_history.STATUS.get("running"):
+        return {"started": False, "status": market_history.STATUS}
+
+    def work():
+        with SessionLocal() as db:
+            try:
+                market_history.backfill(db)
+            except Exception:  # noqa: BLE001 — the status says it failed
+                pass
+
+    threading.Thread(target=work, daemon=True, name="price-backfill").start()
+    return {"started": True}
+
+
+@router.get("/api/rates/backfill")
+def backfill_status():
+    from ..services import market_history
+
+    return market_history.STATUS

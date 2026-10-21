@@ -37,14 +37,18 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
         },
     ),
     "rate_snapshots": (
-        "One market price as a source quoted it at one moment (the price history).",
+        "Market prices and their history: one row per price a source gave at one moment.",
         {
-            "pair": "'USDT/USD', 'USDC/USD', 'BTC/USD', 'ETH/USD', 'USD/COP', 'USD/BRL', 'USD/MXN', 'USD/EUR', 'USD/GBP'",
-            "source": "'tradingview' | 'coinbase' | 'kraken' (live) | 'trm' | 'ecb' (daily official)",
+            "pair": "'BASE/QUOTE': coins against USD, USDT or USDC ('BTC/USDT', 'SOL/USD', "
+                    "'USDT/USD'…) and fiat as 'USD/XXX' ('USD/COP', 'USD/BRL', 'USD/EUR'…)",
+            "source": "'binance_1d' = daily close since each coin was listed (history); "
+                      "'binance', 'kraken', 'coinbase' = spot snapshots three times a day; "
+                      "'tradingview' = TradingView page; 'trm' = official COP rate; "
+                      "'ecb' = 29 fiat currencies, daily",
             "price": "the price (for USD/XXX: units of XXX per 1 USD)",
-            "bid": "best bid when the source gives it", "ask": "best ask when the source gives it",
-            "rate_date": "publication day for daily sources (YYYY-MM-DD)",
-            "taken_at": "UTC timestamp 'YYYY-MM-DDTHH:MM:SS' when we read it",
+            "bid": "best bid (kraken, coinbase)", "ask": "best ask (kraken, coinbase)",
+            "rate_date": "the day, for daily sources and history (YYYY-MM-DD)",
+            "taken_at": "UTC timestamp 'YYYY-MM-DDTHH:MM:SS' of the reading",
         },
     ),
     "accounts": (

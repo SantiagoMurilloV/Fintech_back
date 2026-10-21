@@ -72,15 +72,15 @@ SCHEMA: dict[str, tuple[str, object]] = {
     "quickbooks.since": ("str", ""),
     # --- Market rates -----------------------------------------------------
     # The backend's own copy of USDT/USD, USDC/USD and fiat rates
-    # (services/market_rates.py): on by default, once an hour.
+    # (services/market_rates.py): on by default, three times a day.
     "rates.enabled": ("bool", True),
-    "rates.interval_seconds": ("int", 3600),
+    "rates.interval_seconds": ("int", 28800),
     # TradingView spot prices read with computer use (services/computer_use).
     # Off by default: TradingView's terms restrict automated collection, so
     # switching it on is the operator's decision. Symbols as EXCHANGE:TICKER.
     "tv.enabled": ("bool", False),
     "tv.watchlist": ("str", "COINBASE:USDTUSD,KRAKEN:USDCUSD,COINBASE:BTCUSD,COINBASE:ETHUSD"),
-    "tv.interval_seconds": ("int", 3600),
+    "tv.interval_seconds": ("int", 28800),     # three times a day
 }
 
 SECRET_KEYS = {key for key, (kind, _) in SCHEMA.items() if kind == "secret"}

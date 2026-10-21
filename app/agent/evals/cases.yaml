@@ -72,3 +72,29 @@
 - id: concept_question
   question: "¿Qué es una stablecoin?"
   expect_text: true
+
+- id: sol_close_new_year_2025
+  question: "¿A cuánto cerró SOL el 1 de enero de 2025?"
+  truth_sql: >
+    SELECT price FROM rate_snapshots WHERE source='binance_1d' AND pair='SOL/USDT'
+    AND rate_date='2025-01-01'
+
+- id: btc_change_2025
+  question: "¿Cuántos dólares subió o bajó BTC durante 2025, del cierre del 31 de diciembre de 2024 al del 31 de diciembre de 2025?"
+  truth_sql: >
+    SELECT ROUND((MAX(CASE WHEN rate_date='2025-12-31' THEN price END)
+                - MAX(CASE WHEN rate_date='2024-12-31' THEN price END))::numeric, 2)
+    FROM rate_snapshots WHERE source='binance_1d' AND pair='BTC/USDT'
+
+- id: random_coin_now
+  question: "¿Cuál es el precio actual de DOGE?"
+  truth_sql: >
+    SELECT price FROM rate_snapshots WHERE pair IN ('DOGE/USDT','DOGE/USD')
+    AND source IN ('binance','kraken') ORDER BY taken_at DESC, source LIMIT 1
+  tolerance: 0.01
+
+- id: brl_rate
+  question: "¿A cuánto está el dólar en reales brasileños?"
+  truth_sql: >
+    SELECT price FROM rate_snapshots WHERE pair='USD/BRL' AND source='ecb'
+    ORDER BY taken_at DESC LIMIT 1
