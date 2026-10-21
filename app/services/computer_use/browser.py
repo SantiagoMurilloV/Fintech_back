@@ -25,6 +25,37 @@ KEYS = {
 }
 
 
+# Runs in the page: candidates for the element showing a number.
+DERIVE_JS = r"""
+(value) => {
+  const norm = (t) => parseFloat(String(t).replace(/[^0-9.\-]/g, ''));
+  const close = (a) => Math.abs(a - value) <= Math.max(Math.abs(value) * 1e-6, 1e-9);
+  const hashed = (c) => /[-_][A-Za-z0-9]{6,}$/.test(c) && /[A-Z]|\d/.test(c.slice(-6));
+  const options = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.children.length) continue;
+    const text = (el.textContent || '').trim();
+    if (!text || text.length > 20 || !close(norm(text))) continue;
+    const size = parseFloat(getComputedStyle(el).fontSize) || 0;
+    const tag = el.tagName.toLowerCase();
+    const picks = [];
+    for (const attr of ['data-qa-id', 'data-test', 'data-testid', 'data-field']) {
+      const v = el.getAttribute(attr);
+      if (v) picks.push(`${tag}[${attr}="${v}"]`);
+    }
+    if (el.id && !hashed(el.id)) picks.push(`#${CSS.escape(el.id)}`);
+    for (const c of el.classList) if (!hashed(c)) picks.push(`${tag}.${CSS.escape(c)}`);
+    for (const sel of picks) {
+      const first = document.querySelector(sel);
+      if (first === el) options.push({sel, size});
+    }
+  }
+  options.sort((a, b) => b.size - a.size);
+  return options.length ? options[0].sel : null;
+}
+"""
+
+
 class BrowserUnavailable(RuntimeError):
     pass
 
@@ -77,6 +108,27 @@ class Browser:
         """Open a page in code (cheaper than asking Claude to type the URL)."""
         self.page.goto(url, wait_until="domcontentloaded", timeout=45_000)
         self.page.wait_for_timeout(settle_ms)
+
+    @property
+    def url(self) -> str:
+        return self.page.url
+
+    def read_text(self, selector: str, timeout_ms: int = 8000) -> str:
+        """The text of the first element matching `selector` (the recipe step)."""
+        locator = self.page.locator(selector).first
+        locator.wait_for(state="visible", timeout=timeout_ms)
+        return (locator.inner_text(timeout=timeout_ms) or "").strip()
+
+    def derive_selector(self, value: float) -> str | None:
+        """A stable CSS selector for the element showing `value`, or None.
+
+        Used after computer use read a price: find the element whose text is
+        that number, prefer attributes made to be stable (data-qa-id, id,
+        js-* classes) over generated class names, and keep only a selector
+        whose first match really shows the value. The largest such element
+        wins — the headline price, not a figure in a side table.
+        """
+        return self.page.evaluate(DERIVE_JS, value)
 
     def screenshot(self) -> str:
         """The screen as base64 PNG, the format the tool result carries."""

@@ -379,20 +379,26 @@ with its deterministic summaries. `GET /api/health` reports the provider.
 
 ## Computer use: TradingView spot prices
 
-`services/computer_use/` lets Claude read web pages as a person would: a
-headless Chromium (Playwright) is the screen, the computer toolset
-(`computer_toolset_20260801`) carries Claude's clicks, and the loop ends when
-Claude answers. `tradingview.py` opens each symbol of `tv.watchlist`
-(EXCHANGE:TICKER, e.g. `COINBASE:USDTUSD`) and stores the price Claude reads
-in `rate_snapshots` with source `tradingview`, every `tv.interval_seconds`
-(default 3600) while `tv.enabled` is on. Run it now with
-`POST /api/rates/tradingview` (admin).
+`services/computer_use/` reads TradingView symbol pages in three layers,
+cheapest first, for each symbol of `tv.watchlist` (EXCHANGE:TICKER):
 
-- Off by default: TradingView's terms restrict automated collection.
-- Spot prices only, for a watchlist; history comes from the exchanges.
-- Needs `ANTHROPIC_API_KEY` and a Chromium on the server
-  (`python -m playwright install --with-deps chromium`). Without them the
-  run reports why and the rest of the app is unaffected.
+1. **Recipe.** Playwright opens the saved URL and reads the saved CSS
+   selector (`scrape_recipes`). No model, a few seconds. New symbols start
+   with the default recipe: the symbol page and
+   `[data-qa-id="symbol-last-value"]`.
+2. **Check.** The number must sit within 3 % of an independent reference:
+   our latest Kraken/Coinbase reading, or Coinbase's public ticker.
+3. **Computer use.** On a miss or a failed check, Claude looks at the page
+   (headless Chromium, `computer_toolset_20260801`) and reads the price; the
+   code then finds the element showing it and saves the new selector, so the
+   next run is automatic again.
+
+Readings go to `rate_snapshots` with source `tradingview`. Hourly while
+`tv.enabled` is on (off by default: TradingView's terms restrict automated
+collection). `POST /api/rates/tradingview` runs it now;
+`GET /api/rates/tradingview/recipes` shows each symbol's recipe and health.
+Needs Chromium on the server (`python -m playwright install --with-deps
+chromium`) and, for the fallback, `ANTHROPIC_API_KEY`.
 
 ## Where each record came from
 

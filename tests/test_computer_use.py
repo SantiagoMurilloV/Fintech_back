@@ -80,21 +80,104 @@ def test_watchlist_symbols_and_pairs():
     assert tradingview.pair_of("BINANCE:BTCUSDT") == "BTC/USDT"
 
 
-def test_tradingview_stores_valid_readings_only(db, monkeypatch):
-    readings = iter([{"price": 0.99905}, {"price": None, "reason": "pop-up"}])
-    monkeypatch.setattr(tradingview, "Browser", FakeBrowser)
+class RecipeBrowser(FakeBrowser):
+    """A page whose headline element shows `price`; `missing` breaks the recipe."""
+
+    def __init__(self, price="0.99925", missing=False, learned='span[data-qa-id="new-last"]'):
+        super().__init__()
+        self.price, self.missing, self.learned = price, missing, learned
+
+    @property
+    def url(self):
+        return self.pages[-1] if self.pages else ""
+
+    def read_text(self, selector, timeout_ms=0):
+        if self.missing:
+            raise TimeoutError("element not found")
+        return self.price
+
+    def derive_selector(self, value):
+        return self.learned
+
+
+def _no_reference(_base):
+    return None
+
+
+def test_the_recipe_reads_without_a_model(db, monkeypatch):
+    monkeypatch.setattr(tradingview, "Browser", lambda: RecipeBrowser())
+    monkeypatch.setattr(tradingview.agent, "run", lambda *a, **k: pytest.fail("no model needed"))
+    report = tradingview.run(db, ["COINBASE:USDTUSD"], reference_fetch=lambda _b: 0.9991)
+    entry = report["symbols"][0]
+    assert entry["ok"] and entry["mode"] == "receta" and entry["price"] == 0.99925
+    assert report["summary"]["por_receta"] == 1
+    snap = db.query(RateSnapshot).one()
+    assert (snap.source, snap.pair, snap.price) == ("tradingview", "USDT/USD", 0.99925)
+    recipe = tradingview.recipes(db)[0]
+    assert recipe["learned_by"] == "default" and recipe["failures"] == 0
+
+
+def test_a_broken_recipe_falls_back_and_is_relearned(db, monkeypatch):
+    monkeypatch.setattr(tradingview, "Browser", lambda: RecipeBrowser(missing=True))
     monkeypatch.setattr(tradingview.agent, "is_available", lambda: True)
-    monkeypatch.setattr(tradingview.agent, "run",
-                        lambda *_a, **_k: {"json": next(readings), "steps": 1, "error": None})
-    report = tradingview.run(db, ["COINBASE:USDTUSD", "COINBASE:ETHUSD"])
-    assert [s["ok"] for s in report["symbols"]] == [True, False]
-    rows = db.query(RateSnapshot).all()
-    assert [(r.source, r.pair, r.price) for r in rows] == [("tradingview", "USDT/USD", 0.99905)]
+    monkeypatch.setattr(tradingview.agent, "run", lambda *a, **k: {
+        "json": {"price": 0.99925}, "steps": 2, "error": None})
+    entry = tradingview.run(db, ["COINBASE:USDTUSD"], reference_fetch=lambda _b: 0.999)[
+        "symbols"][0]
+    assert entry["ok"] and entry["mode"] == "computer_use" and entry["recipe_relearned"]
+    recipe = tradingview.recipes(db)[0]
+    assert recipe["selector"] == 'span[data-qa-id="new-last"]'
+    assert recipe["learned_by"] == "computer_use" and recipe["failures"] == 0
 
 
-def test_tradingview_without_a_key_says_so(db, monkeypatch):
+def test_a_number_far_from_the_reference_is_not_stored(db, monkeypatch):
+    # The recipe now points at some other figure; computer use is off.
+    monkeypatch.setattr(tradingview, "Browser", lambda: RecipeBrowser(price="1.25"))
     monkeypatch.setattr(tradingview.agent, "is_available", lambda: False)
-    assert "ANTHROPIC_API_KEY" in tradingview.run(db, ["COINBASE:USDTUSD"])["error"]
+    entry = tradingview.run(db, ["COINBASE:USDTUSD"], reference_fetch=lambda _b: 0.9991)[
+        "symbols"][0]
+    assert not entry["ok"] and "referencia" in entry["error"]
+    assert db.query(RateSnapshot).count() == 0
+    assert tradingview.recipes(db)[0]["failures"] == 1
+
+
+def test_a_fresh_exchange_reading_is_the_reference(db):
+    db.add(RateSnapshot(source="kraken", pair="USDT/USD", price=0.9990,
+                        taken_at=tradingview._now()))
+    db.commit()
+    price, source = tradingview.reference_price(db, "USDT/USD", fetch=_no_reference)
+    assert (price, source) == (0.9990, "kraken")
+
+
+def test_prices_parse_like_the_page_writes_them():
+    assert tradingview.parse_price("67,950.12") == 67950.12
+    assert tradingview.parse_price("\u22121.5") == -1.5
+    assert tradingview.parse_price("—") is None
+
+
+def test_the_selector_is_derived_from_a_real_page():
+    from app.services.computer_use.browser import Browser, BrowserUnavailable
+    try:
+        browser = Browser().__enter__()
+    except BrowserUnavailable:
+        pytest.skip("Chromium not installed")
+    try:
+        browser.page.set_content("""
+          <div><span class="price-AbC123x9 js-last" data-qa-id="symbol-last-value"
+                style="font-size:40px">0.99925</span>
+          <table><tr><td class="cell">0.99925</td></tr></table></div>""")
+        assert browser.derive_selector(0.99925) == 'span[data-qa-id="symbol-last-value"]'
+    finally:
+        browser.__exit__(None, None, None)
+
+
+def test_tradingview_without_a_browser_says_so(db, monkeypatch):
+    from app.services.computer_use.browser import BrowserUnavailable
+
+    def unavailable():
+        raise BrowserUnavailable("El navegador para computer use no está instalado.")
+    monkeypatch.setattr(tradingview, "Browser", unavailable)
+    assert "navegador" in tradingview.run(db, ["COINBASE:USDTUSD"])["error"]
 
 
 def test_claude_chat_returns_text_and_clean_json(monkeypatch):

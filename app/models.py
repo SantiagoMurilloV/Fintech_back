@@ -354,3 +354,25 @@ class RateSnapshot(Base):
     ask: Mapped[float | None] = mapped_column(Float, nullable=True)
     rate_date: Mapped[str | None] = mapped_column(String(10), nullable=True)  # daily sources
     taken_at: Mapped[str] = mapped_column(String(19), index=True)  # UTC, seconds
+
+
+class ScrapeRecipe(Base):
+    """How to read one symbol's price from a page without asking a model.
+
+    Learned the first time (or after a page redesign) by computer use, then
+    replayed by Playwright alone: open `url`, read the element at `selector`.
+    `failures` counts consecutive misses; a miss sends that symbol back to
+    computer use, which reads the price and relearns the selector.
+    """
+    __tablename__ = "scrape_recipes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(40), unique=True, index=True)  # COINBASE:USDTUSD
+    url: Mapped[str] = mapped_column(String(300))
+    selector: Mapped[str] = mapped_column(String(300))
+    learned_by: Mapped[str] = mapped_column(String(20), default="default")   # default · computer_use
+    learned_at: Mapped[str] = mapped_column(String(19))
+    last_ok_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
