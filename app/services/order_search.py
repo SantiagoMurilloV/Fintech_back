@@ -15,6 +15,7 @@ from sqlalchemy import String, Text, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import ORDER_STATUSES, CustomColumn, Order
+from . import origin as origin_service
 
 # A column is offered as a filter only while its distinct values stay this
 # few. Past that it is an identifier (document numbers, references) and the
@@ -26,6 +27,8 @@ FACET_MAX_VALUES = 40
 BASE_FACETS = ("status", "currency", "gateway", "customer")
 # Values the sync keeps in `extra` without a user column, still worth filtering.
 EXTRA_FACETS = ("source_status",)
+# Computed from the record, not stored as a column: where it came from.
+DERIVED_FACETS = ("origin",)
 # User columns become filters by their data type; numbers and dates are not
 # categories.
 FACETABLE_TYPES = ("text",)
@@ -101,6 +104,8 @@ class Search:
         """SQL expression for a filterable field, or None if it does not exist."""
         if key in BASE_FACETS or key == "status":
             return getattr(Order, key)
+        if key == "origin":
+            return origin_service.expression(Order)
         if key in EXTRA_FACETS or key in self.custom_keys:
             return Order.extra[key].as_string()
         return None
@@ -162,7 +167,8 @@ class Search:
         Counts come from the rows matching every OTHER filter, so with «TRON»
         selected the network facet still says how many rows ETHEREUM would give.
         """
-        candidates = [(key, "base") for key in BASE_FACETS]
+        candidates = [(key, "derived") for key in DERIVED_FACETS]
+        candidates += [(key, "base") for key in BASE_FACETS]
         candidates += [(key, "extra") for key in EXTRA_FACETS]
         candidates += [(column.key, "column") for column in self.columns
                        if column.data_type in FACETABLE_TYPES]
