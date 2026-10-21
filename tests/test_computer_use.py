@@ -201,6 +201,8 @@ def test_claude_chat_returns_text_and_clean_json(monkeypatch):
     # Turns start with the user and alternate; the JSON rule is in the system.
     assert calls[1]["messages"] == [{"role": "user", "content": "a\n\nb"}]
     assert "JSON" in calls[1]["system"]
+    # The Anthropic SDK rejects sampling parameters: none may be sent.
+    assert not {"temperature", "top_p"} & set(calls[0])
 
 
 def test_a_failing_model_never_breaks_the_turn(monkeypatch):
