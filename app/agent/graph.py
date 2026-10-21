@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..models import AgentRun, Conversation
 from ..services import llm
-from . import blocks, conversation, drafts, formatting, learning, parsing, router, skills
+from . import blocks, conversation, drafts, formatting, learning, loop, parsing, router, skills
 from .registry import ToolResult, get as get_tool, schemas
 from . import tools as _tools  # noqa: F401 — importing registers every tool
 
@@ -96,6 +96,25 @@ Hard rules:
   or reports that do not exist.
 - Do not repeat the whole table: the user already sees it rendered.
 - If the data shows nothing noteworthy, say so plainly."""
+
+# The pseudo-tool that hands a question to the agent loop.
+LOOP_TOOL = "agent_loop"
+
+# What the fixed rules do not understand: OTC economics, prices, comparisons,
+# explicit years and aggregates (sums, totals, counts, averages). A read question naming any of them goes to the loop even
+# when a rule matched part of it («cliente con más volumen OTC en 2025 y su
+# utilidad» is not the all-time ranking the rule would give).
+_LOOP_TERMS = re.compile(
+    r"utilidad|spread|\botc\b|costo|proveedor|precio|cotiza|tradingview|usdt|usdc|btc|eth|"
+    r"bitcoin|ethereum|trm|compar|\bvs\b|frente a|versus|\b20\d\d\b|"
+    r"\bsuma|\btotal|promedio|cu[aá]nt[oa]s?\b", re.I)
+
+
+def _loop_should_take(plan: "router.Plan", question: str) -> bool:
+    if not loop.available() or plan.tool in ("answer_question",):
+        return False
+    tool = get_tool(plan.tool)
+    return bool(tool and not tool.mutates and _LOOP_TERMS.search(question))
 
 # Three sentences is the ceiling the prompt asks for; the cut enforces it.
 NARRATOR_MAX_SENTENCES = 3
@@ -165,6 +184,21 @@ def run(db: Session, question: str, history: list[dict] | None = None,
     else:
         plan = _node_plan(db, question, trace, attachment_ids, context, draft, history,
                           conversation_id)
+
+    if plan.tool == LOOP_TOOL:
+        answered = loop.run(db, question, history, router.view_label(context))
+        trace.extend(answered.trace)
+        if answered.action and get_tool(answered.action[0]):
+            # An action: back into the guarded pipeline (parse, draft, confirm).
+            tool_name, action_args = answered.action
+            plan = router.Plan(tool_name, action_args, "llm", tool_name, "loop.action")
+            if drafts.is_record_tool(plan.tool):
+                plan = _hydrate(plan, question, db)
+        elif answered.ok and answered.blocks:
+            return _answer(db, conversation_id, question, plan, answered.blocks, trace)
+        else:
+            # The loop could not answer: the classic one-tool planner tries.
+            plan = _llm_plan(db, question, context, history)
 
     arguments = _node_resolve(plan, trace, attachment_ids, question)
 
@@ -314,12 +348,18 @@ def _node_plan(db: Session, question: str, trace: list[dict],
             plan.candidates = []      # the record is settled; stop offering the list
     else:
         plan = router.route(question, context)
+        if plan is not None and _loop_should_take(plan, question):
+            plan = None
         if plan is None:
             plan = _refinement(db, conversation_id, question)
         if plan is None and not _looks_like_refinement(question):
             # A refinement depends on the previous turn: it is never a
             # phrasing worth remembering on its own.
             plan = learning.recall(db, question)
+        if plan is None and loop.available() and not attachment_ids:
+            # No rule knows this question: the agent loop answers it, calling as
+            # many read tools as it needs (see agent/loop.py).
+            plan = router.Plan(LOOP_TOOL, {}, "loop", LOOP_TOOL, "loop")
         if plan is None:
             plan = _llm_plan(db, question, context, history)
 
