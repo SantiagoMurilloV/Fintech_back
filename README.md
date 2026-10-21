@@ -370,6 +370,16 @@ of one of them.
 Structure is the admin's (it defines what the numbers mean); figures are
 everyone's, like orders and expenses.
 
+## Where each record came from
+
+Every order and expense carries an `origin`: `otc` (the OTC trade log loaded
+from the yearly Excel workbook through `POST /api/orders/import/otc`),
+`quickbooks`, `api` (the endpoint sync), `excel` (a plain Excel upload) or
+`manual`. It is derived from `extra.source` by `services/origin.py`, the same
+rule in Python and SQL, so Órdenes can filter by it and Análisis can split by
+it. «Borrar importados» removes only `api` and `quickbooks` records: the OTC
+history and anything typed by hand stay.
+
 ## Editing from the table
 
 Every value in Orders and Expenses is edited where it is read: a click turns
