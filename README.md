@@ -370,6 +370,25 @@ of one of them.
 Structure is the admin's (it defines what the numbers mean); figures are
 everyone's, like orders and expenses.
 
+## The agent: four layers
+
+Modelled on an operator-style agent: **the model plans and communicates, the
+server decides what data and actions are allowed.**
+
+| Layer | Where | Job |
+|---|---|---|
+| Data | `agent/data/` | `catalog.py` says which tables exist for the agent and what each column means (users, settings, sessions, tokens and traces do not exist for it). `query.py` runs the SQL the model writes: one SELECT over catalog tables, read-only transaction, 5 s, 200 rows, with a coverage note. |
+| Agent | `agent/loop.py`, `agent/graph.py` | The loop: Claude calls read tools (the fixed ones, `query_database`, `get_income_statement`), reads the results and repeats until it can answer (≤ 6 calls, ≤ 90 s). Writes are handed back to `graph.py` (`request_action`), so drafts, confirmations and «a written figure is parsed from the user's message» still hold. Fixed rules still answer what they fully understand; questions about OTC, prices, comparisons, years or aggregates go to the loop. |
+| Product awareness | `agent/skills/` | `business.md` (OTC: SELL = off-ramp, spread, provider cost, profit; price sources; the statement) plus the existing playbooks. |
+| Memory | `agent/learning.py` | Learned routings for the fixed planner. |
+
+**Evals** (`agent/evals/`): `cases.yaml` holds real questions whose truth is
+computed straight from the database; `python -m app.agent.evals.eval` asks
+each one through the real pipeline and checks the number appears in the
+answer (13/13 on the OTC 2024–2025 data). **Runner**:
+`python -m app.agent.runner "pregunta"` prints the answer, the tables and
+every step, SQL included.
+
 ## Chat model (Claude)
 
 `services/llm.py` is the one door to the model. With `ANTHROPIC_API_KEY` set
