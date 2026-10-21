@@ -14,7 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import migrations
 from .config import (
-    CHAT_MODEL, CORS_ORIGIN_REGEX, CORS_ORIGINS, JWT_SECRET_IS_EPHEMERAL, SEED_DEMO,
+    CHAT_MODEL, CORS_ORIGIN_REGEX, CORS_ORIGINS, JWT_SECRET_IS_EPHEMERAL, PRICE_SCHEDULER,
+    SEED_DEMO,
     SYNC_FIRST_PULL_SECONDS,
 )
 from .database import Base, SessionLocal, engine
@@ -178,10 +179,12 @@ async def lifespan(_app: FastAPI):
 
     # The periodic pull runs as long as the app does; it stops with it.
     sync_task = asyncio.create_task(_sync_loop())
-    rates_task = asyncio.create_task(_rates_loop())
-    tv_task = asyncio.create_task(_tradingview_loop())
+    tasks = [sync_task]
+    if PRICE_SCHEDULER:
+        tasks += [asyncio.create_task(_rates_loop()), asyncio.create_task(_tradingview_loop())]
+    print(f"Price schedulers: {'on' if PRICE_SCHEDULER else 'off (PRICE_SCHEDULER not set)'}")
     yield
-    for task in (sync_task, rates_task, tv_task):
+    for task in tasks:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
