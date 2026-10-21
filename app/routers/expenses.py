@@ -10,6 +10,7 @@ from ..database import get_db
 from ..models import CURRENCIES, CustomColumn, Expense
 from ..services import columns as columns_service
 from ..services import finance, media, receipts
+from ..services import origin as origin_service
 from ..services import records as records_service
 from .auth import AuthDep
 
@@ -26,6 +27,8 @@ def expense_view(e: Expense, custom: list[CustomColumn] | None = None) -> dict:
         "owner": e.owner, "date": e.date,
         "receipt_name": e.receipt_name, "receipt_url": e.receipt_url,
         "usd_eq": round(finance.usd_eq(e.amount, e.currency), 2),
+        # Where the expense came from: quickbooks · api · excel · manual.
+        "origin": origin_service.of(e.extra),
     }
     # Values for user-defined columns, including recomputed formulas.
     payload["extra"] = columns_service.apply_to_row(payload, custom or [], e.extra)
@@ -62,6 +65,7 @@ def list_expenses(db: Session = Depends(get_db)):
         # Capability flag so the frontend can enable/disable the upload UI.
         "cloudinary": media.is_configured(),
         "columns": [columns_service.column_view(column) for column in custom],
+        "origins": origin_service.LABELS,
     }
 
 

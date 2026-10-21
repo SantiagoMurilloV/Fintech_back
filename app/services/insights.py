@@ -44,6 +44,7 @@ from ..agent.formatting import amount as amount_text
 from ..agent.formatting import integer, percent, status_label, usd_compact
 from ..models import CustomColumn, Expense, Order, Setting
 from . import charts, finance, llm
+from . import origin as origin_service
 
 MAX_ROWS = 100_000      # a year of OTC trades is ~10k rows
 MAX_CATEGORICAL = 15    # more distinct values than this is an id, not a category
@@ -667,6 +668,12 @@ def _operation_tab(db: Session, orders, expenses, data: dict, attention: list) -
                     series=[{**p, "display": p["display"]} for p in sizes]))
                 data["tamanos"] = [{"rango": p["label"], "n": p["value"]} for p in sizes]
 
+        chart = _dimension_chart(
+            "Por origen", _dimension(orders, lambda o: origin_service.label(origin_service.of(o.extra))),
+            dominant, data, "ordenes_origen")
+        if chart:
+            output.append(chart)
+
         for title, fn, key in (("Por pasarela", lambda o: o.gateway, "ordenes_pasarela"),
                                ("Por moneda", lambda o: o.currency, "ordenes_moneda")):
             chart = _dimension_chart(title, _dimension(orders, fn), dominant, data, key)
@@ -692,7 +699,10 @@ def _operation_tab(db: Session, orders, expenses, data: dict, attention: list) -
                 output.append(chart)
 
     if len(expenses) >= 2:
-        for title, fn, key in (("Gastos por categoría", lambda e: e.category, "gastos_categoria"),
+        for title, fn, key in (("Gastos por origen",
+                                lambda e: origin_service.label(origin_service.of(e.extra)),
+                                "gastos_origen"),
+                               ("Gastos por categoría", lambda e: e.category, "gastos_categoria"),
                                ("Gastos por proveedor", lambda e: e.vendor, "gastos_proveedor")):
             chart = _dimension_chart(title, _dimension(expenses, fn), dominant, data, key,
                                      noun="gastos")
@@ -715,12 +725,19 @@ def _data_tab(db: Session, orders, expenses, data: dict) -> list[dict]:
     output: list[dict] = []
     notes: list[dict] = []
 
-    imported = sum(1 for row in list(orders) + list(expenses)
-                   if isinstance(row.extra, dict) and str(row.extra.get("source", "")) == "api")
-    manual = len(orders) + len(expenses) - imported
-    notes.append({"title": f"{integer(imported)} registros vienen de la fuente sincronizada",
-                  "detail": f"{integer(manual)} registrados a mano o importados de Excel.",
-                  "tone": "info"})
+    origins: dict[str, Counter] = {"órdenes": Counter(), "gastos": Counter()}
+    for entity, rows in (("órdenes", orders), ("gastos", expenses)):
+        for row in rows:
+            origins[entity][origin_service.of(row.extra)] += 1
+    for entity, counts in origins.items():
+        if counts:
+            parts = ", ".join(f"{integer(n)} de {origin_service.label(code)}"
+                              for code, n in counts.most_common())
+            notes.append({"title": f"{integer(sum(counts.values()))} {entity}: {parts}",
+                          "detail": "Origen de cada registro: Excel OTC, QuickBooks, endpoint, "
+                                    "Excel o manual.", "tone": "info"})
+    imported = sum(n for c in origins.values() for code, n in c.items() if code != "manual")
+    manual = sum(c["manual"] for c in origins.values())
     missing = sum(1 for e in expenses if not e.receipt_url and not e.receipt_name)
     if missing:
         notes.append({"title": f"{integer(missing)} gastos sin comprobante",

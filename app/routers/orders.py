@@ -14,6 +14,7 @@ from ..database import get_db
 from ..models import CURRENCIES, GATEWAYS, ORDER_STATUSES, CustomColumn, Order
 from ..services import columns as columns_service
 from ..services import api_sync, finance, order_search, otc_import
+from ..services import origin as origin_service
 from ..services import records as records_service
 from .auth import AdminDep, AuthDep
 
@@ -28,6 +29,8 @@ def order_view(o: Order, custom: list[CustomColumn] | None = None) -> dict:
         "usd_eq": round(finance.usd_eq(o.amount, o.currency), 2),
         # The feed's own wording for the state, when the row came from a sync.
         "source_status": (o.extra or {}).get("source_status"),
+        # Where the order came from: otc · quickbooks · api · excel · manual.
+        "origin": origin_service.of(o.extra),
     }
     # Values for user-defined columns, including recomputed formulas.
     payload["extra"] = columns_service.apply_to_row(payload, custom or [], o.extra)
@@ -151,6 +154,7 @@ def list_orders(status: str | None = None, q: str | None = None, filters: str | 
         "period": finance.current_period(db),
         # Catalogs so the frontend can build filters/forms without hardcoding.
         "statuses": ORDER_STATUSES, "gateways": GATEWAYS, "currencies": CURRENCIES,
+        "origins": origin_service.LABELS,
         "columns": [columns_service.column_view(column) for column in custom],
         # Where each base column came from, and which ones the data never
         # fills: the table adapts to the feed, not the feed to the table.

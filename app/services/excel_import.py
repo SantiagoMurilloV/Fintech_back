@@ -139,7 +139,7 @@ def import_file(db: Session, kind: str, content: bytes, filename: str) -> dict:
                 continue
             db.add(Order(id=order_id, customer=str(customer), amount=amount, currency=currency,
                          status=status, gateway=str(get("gateway")) if get("gateway") else None,
-                         date=parsed_date))
+                         date=parsed_date, extra={"source": "excel"}))
             db.flush()  # make next_order_id see this row within the same import
             inserted += 1
         else:
@@ -154,6 +154,7 @@ def import_file(db: Session, kind: str, content: bytes, filename: str) -> dict:
                 owner=str(get("owner")) if get("owner") else None,
                 date=parsed_date,
                 receipt_name=str(get("receipt")) if get("receipt") else None,
+                extra={"source": "excel"},
             ))
             inserted += 1
 
