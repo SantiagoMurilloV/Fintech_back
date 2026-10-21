@@ -29,28 +29,36 @@ KEYS = {
 DERIVE_JS = r"""
 (value) => {
   const norm = (t) => parseFloat(String(t).replace(/[^0-9.\-]/g, ''));
-  const close = (a) => Math.abs(a - value) <= Math.max(Math.abs(value) * 1e-6, 1e-9);
+  // Live prices tick between Claude's read and this search: allow 0.5 %.
+  const close = (a) => Math.abs(a - value) <= Math.max(Math.abs(value) * 0.005, 1e-9);
   const hashed = (c) => /[-_][A-Za-z0-9]{6,}$/.test(c) && /[A-Z]|\d/.test(c.slice(-6));
-  const options = [];
-  for (const el of document.querySelectorAll('body *')) {
-    if (el.children.length) continue;
-    const text = (el.textContent || '').trim();
-    if (!text || text.length > 20 || !close(norm(text))) continue;
-    const size = parseFloat(getComputedStyle(el).fontSize) || 0;
-    const tag = el.tagName.toLowerCase();
-    const picks = [];
+  const picksFor = (el) => {
+    const tag = el.tagName.toLowerCase(), picks = [];
     for (const attr of ['data-qa-id', 'data-test', 'data-testid', 'data-field']) {
       const v = el.getAttribute(attr);
       if (v) picks.push(`${tag}[${attr}="${v}"]`);
     }
     if (el.id && !hashed(el.id)) picks.push(`#${CSS.escape(el.id)}`);
     for (const c of el.classList) if (!hashed(c)) picks.push(`${tag}.${CSS.escape(c)}`);
-    for (const sel of picks) {
-      const first = document.querySelector(sel);
-      if (first === el) options.push({sel, size});
+    return picks;
+  };
+  const options = [];
+  for (const leaf of document.querySelectorAll('body *')) {
+    if (leaf.children.length) continue;
+    const text = (leaf.textContent || '').trim();
+    if (!text || text.length > 20 || !close(norm(text))) continue;
+    const size = parseFloat(getComputedStyle(leaf).fontSize) || 0;
+    // The number may sit in a bare <span> inside the element that carries the
+    // stable attribute: look up a few levels while the text stays the same.
+    let node = leaf;
+    for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      if ((node.textContent || '').trim() !== text) break;
+      for (const sel of picksFor(node)) {
+        if (document.querySelector(sel) === node) options.push({sel, size, depth});
+      }
     }
   }
-  options.sort((a, b) => b.size - a.size);
+  options.sort((a, b) => b.size - a.size || a.depth - b.depth);
   return options.length ? options[0].sel : null;
 }
 """

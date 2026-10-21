@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from ...config import ANTHROPIC_API_KEY, COMPUTER_USE_MODEL
 from .browser import Browser
@@ -45,6 +46,12 @@ def _image(b64: str) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}}
 
 
+def _toolset(block) -> dict:
+    """A result answering a toolset member must name the toolset it came from."""
+    name = getattr(block, "toolset_name", None)
+    return {"toolset_name": name} if name else {}
+
+
 def _json_in(text: str) -> dict | None:
     match = re.search(r"\{.*\}", text or "", re.S)
     if not match:
@@ -56,34 +63,47 @@ def _json_in(text: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def run(browser: Browser, task: str, *, max_steps: int = 8, model: str | None = None) -> dict:
-    """Do `task` on the browser's current page; returns {text, json, steps, error}."""
+def run(browser: Browser, task: str, *, max_steps: int = 8, max_seconds: int = 120,
+        model: str | None = None) -> dict:
+    """Do `task` on the browser's current page.
+
+    Returns {text, json, steps, actions, error}. Stops after `max_steps`
+    actions or `max_seconds`, whichever comes first — a reading that takes
+    longer than that is not worth its cost.
+    """
     client = _anthropic()
+    started = time.monotonic()
     messages = [{"role": "user", "content": [
         {"type": "text", "text": task}, _image(browser.screenshot())]}]
-    steps = 0
+    steps, actions_log = 0, []
     while True:
+        if time.monotonic() - started > max_seconds:
+            return {"text": "", "json": None, "steps": steps, "actions": actions_log,
+                    "error": f"sin respuesta tras {max_seconds} s"}
         response = client.messages.create(
             model=model or COMPUTER_USE_MODEL, max_tokens=1024,
             tools=[TOOLSET], messages=messages)
         actions = [block for block in response.content if block.type == "tool_use"]
         if not actions:
             text = "".join(block.text for block in response.content if block.type == "text")
-            return {"text": text, "json": _json_in(text), "steps": steps, "error": None}
+            return {"text": text, "json": _json_in(text), "steps": steps,
+                    "actions": actions_log, "error": None}
         if steps >= max_steps:
-            return {"text": "", "json": None, "steps": steps,
+            return {"text": "", "json": None, "steps": steps, "actions": actions_log,
                     "error": f"sin respuesta tras {max_steps} acciones"}
 
         messages.append({"role": "assistant", "content": response.content})
         results = []
         for block in actions:
             steps += 1
+            actions_log.append(block.name)
             try:
                 shot = browser.act({"action": block.name, **(block.input or {})})
                 results.append({"type": "tool_result", "tool_use_id": block.id,
-                                "content": [_image(shot)]})
+                                **_toolset(block), "content": [_image(shot)]})
             except Exception as err:  # noqa: BLE001 — tell Claude, let it try another way
                 log.info("computer action %s failed: %s", block.name, err)
                 results.append({"type": "tool_result", "tool_use_id": block.id,
-                                "is_error": True, "content": str(err)[:300]})
+                                **_toolset(block), "is_error": True,
+                                "content": str(err)[:300]})
         messages.append({"role": "user", "content": results})
