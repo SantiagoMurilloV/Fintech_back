@@ -15,7 +15,7 @@ os.environ["SEED_DEMO"] = "false"
 # load_dotenv only fills variables that are absent. Empty reads as "not set".
 os.environ["PUBLIC_BASE_URL"] = "http://localhost:8000"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
-for _key in ("DEEPSEEK_API_KEY", "CLOUDINARY_URL", "QUICKBOOKS_CLIENT_ID",
+for _key in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "CLOUDINARY_URL", "QUICKBOOKS_CLIENT_ID",
              "QUICKBOOKS_CLIENT_SECRET", "QUICKBOOKS_REDIRECT_URI", "FRONTEND_URL",
              "EXTERNAL_API_URL", "EXTERNAL_API_KEY", "ADMIN_PASSWORD"):
     os.environ[_key] = ""

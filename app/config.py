@@ -60,9 +60,16 @@ MIN_PASSWORD_LENGTH = 8
 SEED_DEMO = os.getenv("SEED_DEMO", "true").strip().lower() in ("true", "1", "yes", "si", "sí")
 
 # --- Chat LLM: DeepSeek (OpenAI-compatible API) ---
+# Anthropic (Claude) is the chat model when its key is set; DeepSeek stays as
+# the fallback for a deployment that only has the old key.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or None
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or None
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "deepseek-chat")
+CHAT_PROVIDER = "anthropic" if ANTHROPIC_API_KEY else ("deepseek" if DEEPSEEK_API_KEY else None)
+CHAT_MODEL = os.getenv("CHAT_MODEL") or (
+    "claude-fable-5-1" if CHAT_PROVIDER == "anthropic" else "deepseek-chat")
+# The model that drives the browser in computer use (services/computer_use).
+COMPUTER_USE_MODEL = os.getenv("COMPUTER_USE_MODEL", "claude-fable-5-1")
 
 # --- Cloudinary (media & documents) ---
 # The SDK reads CLOUDINARY_URL from the environment (cloudinary://key:secret@cloud_name).

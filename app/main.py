@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import migrations
 from .config import (
-    CORS_ORIGIN_REGEX, CORS_ORIGINS, DEEPSEEK_API_KEY, JWT_SECRET_IS_EPHEMERAL, SEED_DEMO,
+    CHAT_MODEL, CORS_ORIGIN_REGEX, CORS_ORIGINS, JWT_SECRET_IS_EPHEMERAL, SEED_DEMO,
     SYNC_FIRST_PULL_SECONDS,
 )
 from .database import Base, SessionLocal, engine
@@ -23,7 +23,7 @@ from .routers import (
     plan, rates, reports, settings as settings_router, users,
 )
 from .seed import ensure_admin, seed_if_empty
-from .services import media
+from .services import llm, media
 from .services import settings as settings_service
 
 
@@ -105,6 +105,32 @@ async def _rates_loop():
             delay = 300
 
 
+def _tradingview_tick() -> int:
+    """One computer-use pass over the TradingView watchlist, when switched on."""
+    from .services.computer_use import tradingview
+
+    with SessionLocal() as db:
+        values = settings_service.all_values(db)
+        interval = max(600, int(values.get("tv.interval_seconds") or 3600))
+        if values.get("tv.enabled"):
+            symbols = tradingview.parse_watchlist(values.get("tv.watchlist"))
+            if symbols:
+                tradingview.run(db, symbols)
+    return interval
+
+
+async def _tradingview_loop():
+    log = logging.getLogger("tradingview")
+    delay = 120
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            delay = await asyncio.to_thread(_tradingview_tick)
+        except Exception as err:  # noqa: BLE001 — the loop must survive a bad page
+            log.warning("TradingView pass failed: %s", err)
+            delay = 3600
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Create tables, top up columns added after the first deploy, then seed.
@@ -133,14 +159,16 @@ async def lifespan(_app: FastAPI):
 
     if JWT_SECRET_IS_EPHEMERAL:
         print("WARNING: JWT_SECRET is not set — sessions end on every restart.")
-    print(f"Chat: {'DeepSeek' if DEEPSEEK_API_KEY else 'deterministic only (DEEPSEEK_API_KEY missing)'}")
+    chat_provider = llm.provider()
+    print(f"Chat: {f'{chat_provider} · {CHAT_MODEL}' if chat_provider else 'deterministic only (ANTHROPIC_API_KEY missing)'}")
     print(f"Cloudinary: {'configured' if media.is_configured() else 'NOT configured (local storage)'}")
 
     # The periodic pull runs as long as the app does; it stops with it.
     sync_task = asyncio.create_task(_sync_loop())
     rates_task = asyncio.create_task(_rates_loop())
+    tv_task = asyncio.create_task(_tradingview_loop())
     yield
-    for task in (sync_task, rates_task):
+    for task in (sync_task, rates_task, tv_task):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -172,7 +200,8 @@ def health():
         learned = learning.stats(db)
     return {
         "ok": True,
-        "chat": "deepseek" if DEEPSEEK_API_KEY else "deterministic-only",
+        "chat": llm.provider() or "deterministic-only",
+        "chat_model": CHAT_MODEL if llm.provider() else None,
         "cloudinary": media.is_configured(),
         # Tool count doubles as a smoke check that the agent registry loaded.
         "agent_tools": len(all_tools()),

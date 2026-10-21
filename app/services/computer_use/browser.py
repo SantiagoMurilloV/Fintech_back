@@ -1,0 +1,127 @@
+"""The screen and the hands for computer use: a headless Chromium.
+
+Claude never touches the machine: it asks for an action ("left_click at
+640, 300", "type ...", "screenshot") and this class performs it on a
+browser page and returns a fresh screenshot. The page is the whole screen,
+so coordinates map one to one onto the viewport.
+
+Playwright is imported lazily: a server without the browser installed still
+starts, and the module reports «browser not installed» instead of crashing.
+"""
+from __future__ import annotations
+
+import base64
+import time
+
+WIDTH, HEIGHT = 1280, 800
+
+# Claude's key names -> Playwright's.
+KEYS = {
+    "return": "Enter", "enter": "Enter", "esc": "Escape", "escape": "Escape",
+    "tab": "Tab", "backspace": "Backspace", "delete": "Delete", "space": " ",
+    "up": "ArrowUp", "down": "ArrowDown", "left": "ArrowLeft", "right": "ArrowRight",
+    "page_down": "PageDown", "page_up": "PageUp", "home": "Home", "end": "End",
+    "ctrl": "Control", "cmd": "Meta", "super": "Meta", "alt": "Alt", "shift": "Shift",
+}
+
+
+class BrowserUnavailable(RuntimeError):
+    pass
+
+
+def _key(combo: str) -> str:
+    parts = [KEYS.get(part.strip().lower(), part.strip()) for part in combo.split("+")]
+    return "+".join(parts)
+
+
+class Browser:
+    """One headless page; use as a context manager."""
+
+    def __init__(self, width: int = WIDTH, height: int = HEIGHT):
+        self.width, self.height = width, height
+        self._pw = self._browser = self.page = None
+
+    def __enter__(self) -> Browser:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise BrowserUnavailable(
+                "El navegador para computer use no está instalado (playwright).") from None
+        try:
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=True)
+        except Exception as err:  # noqa: BLE001 — chromium binary missing, sandbox, etc.
+            if self._pw:
+                self._pw.stop()
+            raise BrowserUnavailable(f"No pude abrir Chromium: {err}") from None
+        context = self._browser.new_context(
+            viewport={"width": self.width, "height": self.height}, locale="en-US",
+            user_agent=("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"))
+        self.page = context.new_page()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        for closer in (self._browser, self._pw):
+            try:
+                if closer is self._pw and closer:
+                    closer.stop()
+                elif closer:
+                    closer.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ------------------------------------------------------------------ screen
+
+    def goto(self, url: str, settle_ms: int = 2500) -> None:
+        """Open a page in code (cheaper than asking Claude to type the URL)."""
+        self.page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+        self.page.wait_for_timeout(settle_ms)
+
+    def screenshot(self) -> str:
+        """The screen as base64 PNG, the format the tool result carries."""
+        return base64.b64encode(self.page.screenshot(type="png")).decode()
+
+    # ------------------------------------------------------------------ hands
+
+    def act(self, action: dict) -> str | None:
+        """Perform one computer-use action; returns a screenshot (base64) or None.
+
+        Unknown actions raise ValueError so the agent can tell Claude.
+        """
+        kind = action.get("action")
+        page = self.page
+        x, y = (action.get("coordinate") or [None, None])[:2]
+        if kind == "screenshot":
+            pass
+        elif kind in ("left_click", "right_click", "middle_click", "double_click",
+                      "triple_click"):
+            button = {"right_click": "right", "middle_click": "middle"}.get(kind, "left")
+            clicks = {"double_click": 2, "triple_click": 3}.get(kind, 1)
+            page.mouse.click(x, y, button=button, click_count=clicks)
+        elif kind == "mouse_move":
+            page.mouse.move(x, y)
+        elif kind == "left_click_drag":
+            start = action.get("start_coordinate") or [x, y]
+            page.mouse.move(*start)
+            page.mouse.down()
+            page.mouse.move(x, y)
+            page.mouse.up()
+        elif kind == "type":
+            page.keyboard.type(str(action.get("text", "")), delay=15)
+        elif kind == "key":
+            page.keyboard.press(_key(str(action.get("text", ""))))
+        elif kind == "scroll":
+            amount = int(action.get("scroll_amount") or 3) * 100
+            direction = action.get("scroll_direction", "down")
+            dx = {"left": -amount, "right": amount}.get(direction, 0)
+            dy = {"up": -amount, "down": amount}.get(direction, 0)
+            if x is not None:
+                page.mouse.move(x, y)
+            page.mouse.wheel(dx, dy)
+        elif kind == "wait":
+            time.sleep(min(float(action.get("duration") or 1), 5))
+        else:
+            raise ValueError(f"Acción no soportada: {kind}")
+        page.wait_for_timeout(600)
+        return self.screenshot()
