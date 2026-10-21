@@ -1,7 +1,7 @@
 """Market rates the backend keeps a copy of (see services/market_rates.py)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -85,3 +85,17 @@ def backfill_status():
     from ..services import market_history
 
     return market_history.STATUS
+
+
+@router.post("/api/rates/import")
+async def import_rates(file: UploadFile = File(...), db: Session = Depends(get_db), _=AdminDep):
+    """Load prices exported from another database (gzip CSV); duplicates are skipped."""
+    from ..services import rates_transfer
+
+    content = await file.read()
+    if len(content) > 60 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="El archivo supera 60 MB.")
+    try:
+        return rates_transfer.import_file(db, content)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from None

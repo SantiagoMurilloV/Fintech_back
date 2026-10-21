@@ -68,6 +68,11 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 CHAT_PROVIDER = "anthropic" if ANTHROPIC_API_KEY else ("deepseek" if DEEPSEEK_API_KEY else None)
 CHAT_MODEL = os.getenv("CHAT_MODEL") or (
     "claude-opus-5-5" if CHAT_PROVIDER == "anthropic" else "deepseek-chat")
+# The price schedulers (market rates three times a day, TradingView) only run
+# where they are switched on: PRICE_SCHEDULER=on. Production imports prices
+# instead of collecting them until someone decides otherwise.
+PRICE_SCHEDULER = os.getenv("PRICE_SCHEDULER", "off").strip().lower() in ("on", "1", "true", "yes")
+
 # The model that drives the browser in computer use (services/computer_use).
 COMPUTER_USE_MODEL = os.getenv("COMPUTER_USE_MODEL", "claude-opus-5-5")
 
