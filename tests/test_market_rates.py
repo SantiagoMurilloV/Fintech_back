@@ -59,7 +59,7 @@ def test_latest_and_history_routes(db, monkeypatch):
     try:
         client = TestClient(app)
         body = client.get("/api/rates", headers=headers).json()
-        assert body["snapshots"] == 3 and body["interval_seconds"] == 300
+        assert body["snapshots"] == 3 and body["interval_seconds"] == 3600
         assert {(i["source"], i["pair"]) for i in body["items"]} == {
             ("kraken", "USDT/USD"), ("trm", "USD/COP")}
         history = client.get("/api/rates/history", headers=headers,
