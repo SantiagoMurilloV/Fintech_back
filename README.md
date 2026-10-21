@@ -370,6 +370,30 @@ of one of them.
 Structure is the admin's (it defines what the numbers mean); figures are
 everyone's, like orders and expenses.
 
+## Chat model (Claude)
+
+`services/llm.py` is the one door to the model. With `ANTHROPIC_API_KEY` set
+the chat runs on Claude (`CHAT_MODEL`, default `claude-fable-5-1`); with only
+`DEEPSEEK_API_KEY` it falls back to DeepSeek; with neither, the agent answers
+with its deterministic summaries. `GET /api/health` reports the provider.
+
+## Computer use: TradingView spot prices
+
+`services/computer_use/` lets Claude read web pages as a person would: a
+headless Chromium (Playwright) is the screen, the computer toolset
+(`computer_toolset_20260801`) carries Claude's clicks, and the loop ends when
+Claude answers. `tradingview.py` opens each symbol of `tv.watchlist`
+(EXCHANGE:TICKER, e.g. `COINBASE:USDTUSD`) and stores the price Claude reads
+in `rate_snapshots` with source `tradingview`, every `tv.interval_seconds`
+(default 3600) while `tv.enabled` is on. Run it now with
+`POST /api/rates/tradingview` (admin).
+
+- Off by default: TradingView's terms restrict automated collection.
+- Spot prices only, for a watchlist; history comes from the exchanges.
+- Needs `ANTHROPIC_API_KEY` and a Chromium on the server
+  (`python -m playwright install --with-deps chromium`). Without them the
+  run reports why and the rest of the app is unaffected.
+
 ## Where each record came from
 
 Every order and expense carries an `origin`: `otc` (the OTC trade log loaded

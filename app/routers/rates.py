@@ -39,3 +39,12 @@ def rate_history(pair: str, source: str | None = None, since: str | None = None,
 def refresh_rates(db: Session = Depends(get_db), _=AdminDep):
     """Take a snapshot now instead of waiting for the next tick."""
     return market_rates.snapshot(db)
+
+
+@router.post("/api/rates/tradingview")
+def read_tradingview(db: Session = Depends(get_db), _=AdminDep):
+    """Read the TradingView watchlist with computer use now (admin)."""
+    from ..services.computer_use import tradingview
+
+    symbols = tradingview.parse_watchlist(settings_service.get(db, "tv.watchlist"))
+    return tradingview.run(db, symbols)

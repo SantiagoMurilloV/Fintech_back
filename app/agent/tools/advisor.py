@@ -77,7 +77,7 @@ Limits, without exception:
 Today is {{today}}. The user is looking at: {{view}}."""
 
 UNAVAILABLE = (
-    "Para conversar necesito el modelo configurado (DEEPSEEK_API_KEY en el backend). "
+    "Para conversar necesito el modelo configurado (ANTHROPIC_API_KEY en el backend). "
     "Mientras tanto puedo darle los datos del panel: pídame «cómo cerró el mes», "
     "«gastos sin comprobante» o «muéstreme las órdenes rechazadas»."
 )

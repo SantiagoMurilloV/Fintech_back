@@ -75,6 +75,12 @@ SCHEMA: dict[str, tuple[str, object]] = {
     # (services/market_rates.py): on by default, once an hour.
     "rates.enabled": ("bool", True),
     "rates.interval_seconds": ("int", 3600),
+    # TradingView spot prices read with computer use (services/computer_use).
+    # Off by default: TradingView's terms restrict automated collection, so
+    # switching it on is the operator's decision. Symbols as EXCHANGE:TICKER.
+    "tv.enabled": ("bool", False),
+    "tv.watchlist": ("str", "COINBASE:USDTUSD,COINBASE:USDCUSD,COINBASE:BTCUSD,COINBASE:ETHUSD"),
+    "tv.interval_seconds": ("int", 3600),
 }
 
 SECRET_KEYS = {key for key, (kind, _) in SCHEMA.items() if kind == "secret"}
@@ -134,6 +140,8 @@ def update(db: Session, changes: dict, actor: str | None = None) -> dict:
             value = max(MIN_INTERVAL, min(value, MAX_INTERVAL))
         if key == "rates.interval_seconds":
             value = max(60, min(value, 86_400))
+        if key == "tv.interval_seconds":
+            value = max(600, min(value, 86_400))
         if key == "api.auth_scheme":
             value = value.lower()
             if value not in ("bearer", "api-key"):
