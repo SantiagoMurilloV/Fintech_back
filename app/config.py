@@ -67,9 +67,9 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or None
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 CHAT_PROVIDER = "anthropic" if ANTHROPIC_API_KEY else ("deepseek" if DEEPSEEK_API_KEY else None)
 CHAT_MODEL = os.getenv("CHAT_MODEL") or (
-    "claude-fable-5-1" if CHAT_PROVIDER == "anthropic" else "deepseek-chat")
+    "claude-opus-5-5" if CHAT_PROVIDER == "anthropic" else "deepseek-chat")
 # The model that drives the browser in computer use (services/computer_use).
-COMPUTER_USE_MODEL = os.getenv("COMPUTER_USE_MODEL", "claude-fable-5-1")
+COMPUTER_USE_MODEL = os.getenv("COMPUTER_USE_MODEL", "claude-opus-5-5")
 
 # --- Cloudinary (media & documents) ---
 # The SDK reads CLOUDINARY_URL from the environment (cloudinary://key:secret@cloud_name).
