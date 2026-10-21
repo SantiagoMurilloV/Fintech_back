@@ -20,7 +20,7 @@ from .config import (
 from .database import Base, SessionLocal, engine
 from .routers import (
     auth, chat, columns, demo_feed, expenses, files, imports, integrations, orders,
-    plan, reports, settings as settings_router, users,
+    plan, rates, reports, settings as settings_router, users,
 )
 from .seed import ensure_admin, seed_if_empty
 from .services import media
@@ -76,6 +76,35 @@ async def _sync_loop():
             delay = 60
 
 
+# Market rates are polled more often than the feed, but never faster than this.
+RATES_MIN_INTERVAL = 60
+
+
+def _rates_tick() -> int:
+    """One market-rates snapshot; returns the seconds until the next one."""
+    from .services import market_rates
+
+    with SessionLocal() as db:
+        values = settings_service.all_values(db)
+        interval = max(RATES_MIN_INTERVAL, int(values.get("rates.interval_seconds") or 300))
+        if values.get("rates.enabled"):
+            market_rates.snapshot(db)
+    return interval
+
+
+async def _rates_loop():
+    """Keep a copy of market prices for the life of the app (a failure is retried)."""
+    log = logging.getLogger("rates")
+    delay = 20
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            delay = await asyncio.to_thread(_rates_tick)
+        except Exception as err:  # noqa: BLE001 — the loop must survive a bad source
+            log.warning("Rates snapshot failed: %s", err)
+            delay = 300
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Create tables, top up columns added after the first deploy, then seed.
@@ -109,10 +138,12 @@ async def lifespan(_app: FastAPI):
 
     # The periodic pull runs as long as the app does; it stops with it.
     sync_task = asyncio.create_task(_sync_loop())
+    rates_task = asyncio.create_task(_rates_loop())
     yield
-    sync_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await sync_task
+    for task in (sync_task, rates_task):
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Mandioca API", version="0.4.0", lifespan=lifespan)
@@ -128,7 +159,7 @@ app.add_middleware(
 
 for router in (auth.router, users.router, settings_router.router, orders.router, expenses.router, reports.router,
                imports.router, chat.router, integrations.router, columns.router,
-               files.router, demo_feed.router, plan.router):
+               files.router, demo_feed.router, plan.router, rates.router):
     app.include_router(router)
 
 

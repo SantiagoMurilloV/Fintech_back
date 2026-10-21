@@ -70,6 +70,11 @@ SCHEMA: dict[str, tuple[str, object]] = {
     "quickbooks.sync_sales": ("bool", True),
     # First pull starts at this date (YYYY-MM-DD); empty = current year.
     "quickbooks.since": ("str", ""),
+    # --- Market rates -----------------------------------------------------
+    # The backend's own copy of USDT/USD, USDC/USD and fiat rates
+    # (services/market_rates.py): on by default, every five minutes.
+    "rates.enabled": ("bool", True),
+    "rates.interval_seconds": ("int", 300),
 }
 
 SECRET_KEYS = {key for key, (kind, _) in SCHEMA.items() if kind == "secret"}
@@ -127,6 +132,8 @@ def update(db: Session, changes: dict, actor: str | None = None) -> dict:
         value = _coerce(kind, raw)
         if key == "sync.interval_seconds":
             value = max(MIN_INTERVAL, min(value, MAX_INTERVAL))
+        if key == "rates.interval_seconds":
+            value = max(60, min(value, 86_400))
         if key == "api.auth_scheme":
             value = value.lower()
             if value not in ("bearer", "api-key"):
