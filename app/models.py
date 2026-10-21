@@ -333,3 +333,24 @@ class AgentRun(Base):
     planner: Mapped[str] = mapped_column(String(20))   # "rules" | "llm"
     trace: Mapped[list] = mapped_column(JsonColumn, default=list)  # [{node, tool, args, ms, ok}]
     created_at: Mapped[str] = mapped_column(String(19))
+
+
+class RateSnapshot(Base):
+    """One market price as a source quoted it at one moment.
+
+    Taken every few minutes by services/market_rates.py, so the panel keeps
+    its own copy of USDT/USD, USDC/USD and the fiat rates (TRM for COP, the
+    ECB for BRL/MXN/EUR/GBP) instead of a fixed number in the config. Daily
+    sources are stored once per published day; live sources on every tick.
+    """
+    __tablename__ = "rate_snapshots"
+    __table_args__ = (UniqueConstraint("source", "pair", "taken_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pair: Mapped[str] = mapped_column(String(20), index=True)      # "USDT/USD", "USD/COP"
+    source: Mapped[str] = mapped_column(String(20))                # kraken · coinbase · trm · ecb
+    price: Mapped[float] = mapped_column(Float)                    # last trade or official rate
+    bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rate_date: Mapped[str | None] = mapped_column(String(10), nullable=True)  # daily sources
+    taken_at: Mapped[str] = mapped_column(String(19), index=True)  # UTC, seconds
