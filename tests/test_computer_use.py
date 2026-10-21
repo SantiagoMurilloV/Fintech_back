@@ -43,7 +43,7 @@ def fake_claude(replies):
 
 
 def tool(name, **inputs):
-    return NS(type="tool_use", name=name, id=f"tu_{name}", input=inputs)
+    return NS(type="tool_use", name=name, id=f"tu_{name}", input=inputs, toolset_name="computer")
 
 
 def text(value):
@@ -62,7 +62,8 @@ def test_the_loop_acts_until_claude_answers(monkeypatch):
     assert result["json"]["price"] == 0.99905 and result["steps"] == 1
     assert calls[0]["tools"][0]["type"] == "computer_toolset_20260801"
     # The screenshot after the click goes back as the tool result.
-    assert calls[1]["messages"][-1]["content"][0]["type"] == "tool_result"
+    result_block = calls[1]["messages"][-1]["content"][0]
+    assert result_block["type"] == "tool_result" and result_block["toolset_name"] == "computer"
 
 
 def test_the_loop_stops_at_the_step_budget(monkeypatch):
@@ -167,6 +168,12 @@ def test_the_selector_is_derived_from_a_real_page():
                 style="font-size:40px">0.99925</span>
           <table><tr><td class="cell">0.99925</td></tr></table></div>""")
         assert browser.derive_selector(0.99925) == 'span[data-qa-id="symbol-last-value"]'
+        # As on TradingView: the number in a bare <span> inside the marked one,
+        # and a tick between the read and the search.
+        browser.page.set_content("""
+          <span class="last-KLji300y js-symbol-last" data-qa-id="symbol-last-value"
+                style="font-size:40px"><span>2,513.4</span></span>""")
+        assert browser.derive_selector(2514.1) == 'span[data-qa-id="symbol-last-value"]'
     finally:
         browser.__exit__(None, None, None)
 

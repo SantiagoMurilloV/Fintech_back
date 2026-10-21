@@ -46,8 +46,11 @@ REFERENCE_MAX_AGE = timedelta(hours=3)
 EXCHANGE_SOURCES = ("coinbase", "kraken")
 
 TASK = """You are looking at the TradingView page of the symbol {symbol}.
-If a cookie banner, sign-in prompt or pop-up covers the page, close it.
-If this is not the page of {symbol}, use the site's search box to open it.
+The screenshot below is the current screen. If the price is visible in it,
+answer RIGHT AWAY without taking any action — do not take another
+screenshot, do not scroll, do not click.
+Only if a cookie banner, sign-in prompt or pop-up covers the price, close it.
+This IS the right page: do not search, do not open other pages.
 Then read the CURRENT price shown at the top of the page (the large number
 next to the symbol name) and the daily change in percent.
 Do not sign in and do not buy or change anything.
@@ -185,21 +188,25 @@ def read_symbol(db: Session, browser: Browser, symbol: str, *, reference_fetch=N
     problem_cu = check(price, reference)
     if problem_cu is not None:
         return {**entry, "ok": False, "mode": "computer_use", "steps": result["steps"],
-                "error": answer.get("reason") or result.get("error") or problem_cu,
+                "actions": result.get("actions"), "error": answer.get("reason") or result.get("error") or problem_cu,
                 "recipe_error": problem}
 
+    # Learn on the symbol page itself, even if Claude wandered elsewhere.
     learned = None
     try:
         learned = browser.derive_selector(price)
+        if not learned and browser.url != recipe.url:
+            browser.goto(recipe.url)
+            learned = browser.derive_selector(price)
     except Exception as err:  # noqa: BLE001 — the price still counts; the recipe waits
         log.info("Could not derive a selector for %s: %s", symbol, err)
     if learned:
-        recipe.selector, recipe.url = learned, browser.url
+        recipe.selector = learned
         recipe.learned_by, recipe.learned_at = "computer_use", _now()
         recipe.failures = 0
     recipe.last_ok_at, recipe.last_price = _now(), price
     return {**entry, "ok": True, "mode": "computer_use", "price": price,
-            "steps": result["steps"], "recipe_error": problem,
+            "steps": result["steps"], "actions": result.get("actions"), "recipe_error": problem,
             "recipe_relearned": bool(learned), "selector": learned}
 
 
