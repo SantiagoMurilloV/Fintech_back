@@ -11,13 +11,16 @@ ejecutada del libro OTC 2024–2025.
 - El proveedor está en `gateway`; el cliente en `customer` (en mayúsculas).
 
 **Precios** (tabla `rate_snapshots`):
-- «según TradingView» → `source = 'tradingview'`; si no dice fuente, prefiera
-  'tradingview', luego 'coinbase', luego 'kraken'.
-- «hoy» o «ahora» = la lectura más reciente (`ORDER BY taken_at DESC LIMIT 1`). Diga la hora
-  de la lectura (UTC).
-- Un precio en una fecha pasada: la lectura más cercana a esa fecha; si no hay lecturas de
-  ese día, dígalo en vez de usar otra fecha sin avisar.
-- El dólar en Colombia es la TRM: `pair = 'USD/COP'`, `source = 'trm'`.
+- Precio **actual** de una moneda: la lectura más reciente de 'binance', 'kraken' o
+  'coinbase' (tres veces al día). «Según TradingView» → `source = 'tradingview'`.
+- Precio en una **fecha pasada**: `source = 'binance_1d'` y `rate_date = 'YYYY-MM-DD'`
+  (cierre diario en UTC, desde que la moneda se listó). Use el par contra USDT
+  (`'SOL/USDT'`); USDT ≈ USD. Si no hay ese día, dígalo en vez de usar otro sin avisar.
+- Comparaciones («SOL hoy vs. hace un año», «cuánto subió BTC en 2025») se calculan en un
+  solo SQL con las dos lecturas.
+- Diga siempre de qué fuente y de qué fecha u hora es cada precio.
+- El dólar en Colombia es la TRM: `pair = 'USD/COP'`, `source = 'trm'`. Otras monedas
+  fiat: `source = 'ecb'`, `pair = 'USD/BRL'`, 'USD/MXN', 'USD/EUR'…
 
 **Estado de resultados**: las cifras mensuales están en `account_values` (por `account_key` y
 `period`), con el significado de cada cuenta en `accounts`. Los totales son recetas

@@ -59,7 +59,7 @@ def test_latest_and_history_routes(db, monkeypatch):
     try:
         client = TestClient(app)
         body = client.get("/api/rates", headers=headers).json()
-        assert body["snapshots"] == 3 and body["interval_seconds"] == 3600
+        assert body["snapshots"] == 3 and body["interval_seconds"] == 28800
         assert {(i["source"], i["pair"]) for i in body["items"]} == {
             ("kraken", "USDT/USD"), ("trm", "USD/COP")}
         history = client.get("/api/rates/history", headers=headers,
@@ -70,25 +70,105 @@ def test_latest_and_history_routes(db, monkeypatch):
         app.dependency_overrides.clear()
 
 
+class Reply:
+    def __init__(self, body):
+        self.body, self.status_code, self.headers = body, 200, {}
+
+    def json(self):
+        return self.body
+
+    def raise_for_status(self):
+        return None
+
+
+class FakeHTTP:
+    """Answers by URL fragment, like the real APIs would."""
+
+    def __init__(self, routes):
+        self.routes = routes
+
+    def get(self, url, **_kwargs):
+        for fragment, body in self.routes.items():
+            if fragment in url:
+                return Reply(body(url, _kwargs) if callable(body) else body)
+        raise AssertionError(f"unexpected call {url}")
+
+
+SAMPLES = {
+    "kraken": {
+        "AssetPairs": {"error": [], "result": {
+            "XXBTZUSD": {"wsname": "XBT/USD"}, "USDTZUSD": {"wsname": "USDT/USD"},
+            "XXBTZEUR": {"wsname": "XBT/EUR"}}},
+        "Ticker": {"error": [], "result": {
+            "XXBTZUSD": {"c": ["84500.1"], "b": ["84500"], "a": ["84501"]},
+            "USDTZUSD": {"c": ["0.999"], "b": ["0.9989"], "a": ["0.9991"]},
+            "XXBTZEUR": {"c": ["78000"], "b": ["1"], "a": ["1"]}}},
+    },
+    "binance": {
+        "exchangeInfo": {"symbols": [
+            {"symbol": "SOLUSDT", "baseAsset": "SOL", "quoteAsset": "USDT"},
+            {"symbol": "SOLTRY", "baseAsset": "SOL", "quoteAsset": "TRY"}]},
+        "ticker/price": [{"symbol": "SOLUSDT", "price": "152.3"},
+                         {"symbol": "SOLTRY", "price": "6000"}],
+    },
+    "coinbase": {"ticker": {"price": "0.99904", "bid": "0.99904", "ask": "0.99905"}},
+    "trm": {"datos.gov.co": [{"valor": "3163.76", "vigenciadesde": "2026-10-21T00:00:00.000"}]},
+    "ecb": {"frankfurter": {"date": "2026-10-21", "rates": {"BRL": 5.0233, "JPY": 151.2}}},
+}
+
+
 @pytest.mark.parametrize("name", sorted(market_rates.FETCHERS))
 def test_every_fetcher_reads_its_source_shape(name):
-    samples = {
-        "kraken": {"error": [], "result": {"USDTZUSD": {"c": ["0.999"], "b": ["0.9989"], "a": ["0.9991"]}}},
-        "coinbase": {"price": "0.99904", "bid": "0.99904", "ask": "0.99905"},
-        "trm": [{"valor": "3163.76", "vigenciadesde": "2026-10-21T00:00:00.000"}],
-        "ecb": {"date": "2026-10-21", "rates": {"BRL": 5.0233}},
-    }
-
-    class Reply:
-        def __init__(self, body):
-            self.body = body
-
-        def json(self):
-            return self.body
-
-    class Client:
-        def get(self, *_args, **_kwargs):
-            return Reply(samples[name])
-
-    quotes = market_rates.FETCHERS[name](Client())
+    quotes = market_rates.FETCHERS[name](FakeHTTP(SAMPLES[name]))
     assert quotes and all(q["price"] > 0 for q in quotes)
+
+
+def test_only_dollar_quotes_are_kept_and_kraken_names_are_normal():
+    kraken = {q["pair"] for q in market_rates.fetch_kraken(FakeHTTP(SAMPLES["kraken"]))}
+    assert kraken == {"BTC/USD", "USDT/USD"}
+    binance = [q["pair"] for q in market_rates.fetch_binance(FakeHTTP(SAMPLES["binance"]))]
+    assert binance == ["SOL/USDT"]
+
+
+def test_a_restart_does_not_add_a_round(db, monkeypatch):
+    assert market_rates.seconds_since_last(db, ("kraken",)) is None
+    db.add(RateSnapshot(source="kraken", pair="USDT/USD", price=1.0,
+                        taken_at=market_rates._now()))
+    db.commit()
+    assert market_rates.seconds_since_last(db, ("kraken",)) < 60
+
+
+def test_history_backfill_adds_closed_days_and_resumes(db, monkeypatch):
+    from app.services import market_history
+    day = market_history.DAY_MS
+    calls = []
+
+    def klines(url, kwargs):
+        calls.append(kwargs["params"]["startTime"])
+        start = kwargs["params"]["startTime"]
+        base = start or day * 19000          # 2022-01-08
+        return [[base + i * day, "0", "0", "0", str(100 + i), "0", base + i * day + day - 1]
+                for i in range(3)]
+
+    routes = {"exchangeInfo": {"symbols": [{"symbol": "SOLUSDT", "baseAsset": "SOL",
+                                            "quoteAsset": "USDT"}]},
+              "klines": klines}
+    monkeypatch.setattr(market_history, "PAUSE", 0)
+    monkeypatch.setattr(market_history.httpx, "Client", lambda **_k: _ctx(FakeHTTP(routes)))
+    first = market_history.backfill(db)
+    assert first["days_added"] == 3
+    rows = db.query(RateSnapshot).filter_by(source="binance_1d").order_by(RateSnapshot.rate_date).all()
+    assert [r.price for r in rows] == [100.0, 101.0, 102.0] and rows[0].pair == "SOL/USDT"
+    market_history.backfill(db)
+    assert calls[-1] == day * 19000 + 3 * day          # resumed after the last stored day
+
+
+class _ctx:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __enter__(self):
+        return self.inner
+
+    def __exit__(self, *_):
+        return None
