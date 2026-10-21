@@ -86,7 +86,7 @@ def _rates_tick() -> int:
 
     with SessionLocal() as db:
         values = settings_service.all_values(db)
-        interval = max(RATES_MIN_INTERVAL, int(values.get("rates.interval_seconds") or 300))
+        interval = max(RATES_MIN_INTERVAL, int(values.get("rates.interval_seconds") or 3600))
         if values.get("rates.enabled"):
             market_rates.snapshot(db)
     return interval

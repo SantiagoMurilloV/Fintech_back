@@ -1,6 +1,6 @@
 """Market prices, fetched from free public sources and kept as our own copy.
 
-Every tick (5 minutes by default, `rates.interval_seconds`) the backend calls:
+Every tick (hourly by default, `rates.interval_seconds`) the backend calls:
 
     Kraken     USDT/USD, USDC/USD   live, last trade + bid/ask, no key
     Coinbase   USDT/USD             live, last trade + bid/ask, no key
