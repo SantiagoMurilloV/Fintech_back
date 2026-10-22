@@ -379,7 +379,7 @@ server decides what data and actions are allowed.**
 |---|---|---|
 | Data | `agent/data/` | `catalog.py` says which tables exist for the agent and what each column means (users, settings, sessions, tokens and traces do not exist for it). `query.py` runs the SQL the model writes: one SELECT over catalog tables, read-only transaction, 5 s, 200 rows, with a coverage note. |
 | Agent | `agent/loop.py`, `agent/graph.py` | The loop: Claude calls read tools (the fixed ones, `query_database`, `get_income_statement`), reads the results and repeats until it can answer (≤ 6 calls, ≤ 90 s). Writes are handed back to `graph.py` (`request_action`), so drafts, confirmations and «a written figure is parsed from the user's message» still hold. Fixed rules still answer what they fully understand; questions about OTC, prices, comparisons, years or aggregates go to the loop. |
-| Product awareness | `agent/skills/` | `business.md` (OTC: SELL = off-ramp, spread, provider cost, profit; price sources; the statement) plus the existing playbooks. |
+| Product awareness | `playbooks/` | Markdown playbooks, general and per client (see below), read by the agent on demand. |
 | Memory | `agent/learning.py` | Learned routings for the fixed planner. |
 
 **Evals** (`agent/evals/`): `cases.yaml` holds real questions whose truth is
@@ -388,6 +388,37 @@ each one through the real pipeline and checks the number appears in the
 answer (13/13 on the OTC 2024–2025 data). **Runner**:
 `python -m app.agent.runner "pregunta"` prints the answer, the tables and
 every step, SQL included.
+
+## Playbooks: what the agent knows how to do
+
+Knowledge, not code. The agent reads markdown; nothing about a report's
+content is hardcoded.
+
+```
+playbooks/
+├── general/                 for every client: how to do a task
+│   ├── daily_close.md       cierre diario
+│   ├── income_statement.md  estado de resultados, análisis vertical y horizontal
+│   ├── dashboards.md        tableros de operaciones, finanzas y gerencia
+│   └── …
+└── clients/<CLIENT_ID>/     this client only
+    ├── context.md           its business, its terms, which field holds what
+    └── <name>.md            same name as a general playbook → replaces it;
+                             new name → a task only this client has
+```
+
+- `CLIENT_ID` picks the folder (default: the company name in lower case).
+- Every file starts with `# Title` and `> one-line description`. The agent
+  sees that catalog in every turn, loads a playbook with `load_skill` when a
+  request needs it, and always has the client's `context.md`.
+- General playbooks never name a client's fields: they say «the client
+  context says which field is the profit». The client's `context.md` maps
+  them (Mandioca: profit = `extra->>'utilidad'`, provider = `gateway`…).
+- The agent builds the report from queries and lays it out with `present`;
+  the server formats it and refuses any number that did not come from a
+  tool result in that answer.
+- To teach a new task: write a playbook (general or for the client) and add
+  a question with its true answer to `agent/evals/cases.yaml`.
 
 ## Chat model (Claude)
 

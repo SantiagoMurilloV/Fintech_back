@@ -1,4 +1,5 @@
 # Skill: monthly close
+> Cómo resumir el cierre de un mes con los indicadores del panel.
 
 Applies when the user asks about closing a month, an executive summary, or how
 the business performed.

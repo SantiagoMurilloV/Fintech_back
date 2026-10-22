@@ -1,4 +1,5 @@
 # Skill: schema evolution
+> Cómo agregar columnas o campos calculados a las tablas.
 
 Applies when the user wants a new column, a computed field, or values written
 into an existing custom column.

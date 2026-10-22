@@ -1,5 +1,6 @@
 """Backend configuration loaded from environment variables (.env)."""
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -131,6 +132,9 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("
 
 # --- Company identity printed on generated PDFs ---
 COMPANY_NAME = os.getenv("COMPANY_NAME", "Mandioca")
+# Which client's playbooks and context the agent reads (playbooks/clients/<id>/).
+# Defaults to the company name, lower-case: «mandioca».
+CLIENT_ID = (os.getenv("CLIENT_ID") or re.sub(r"[^a-z0-9_]+", "_", COMPANY_NAME.lower())).strip("_")
 COMPANY_TAX_ID = os.getenv("COMPANY_TAX_ID", "")
 
 # --- CORS: allowed frontend origins ---

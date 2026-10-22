@@ -64,8 +64,8 @@ def test_ctes_over_catalog_tables_are_fine(db, data):
 
 # ------------------------------------------------------------------- the loop
 
-def call(name, **inputs):
-    return NS(type="tool_use", name=name, id=f"tu_{name}", input=inputs)
+def call(tool_name, **inputs):
+    return NS(type="tool_use", name=tool_name, id=f"tu_{tool_name}", input=inputs)
 
 
 def say(text):
@@ -128,3 +128,33 @@ def test_the_loop_stops_at_its_turn_budget(db, data):
                          for _ in range(loop.MAX_TURNS)])
     result = loop.run(db, "¿?", client=claude)
     assert not result.ok and len(claude.calls) == loop.MAX_TURNS
+
+
+# ------------------------------------------------------------- skills, layout
+
+def test_skills_are_listed_and_loaded_on_demand(db, data):
+    claude = FakeClaude([[call("load_skill", name="daily_close")], [say("Listo.")]])
+    loop.run(db, "Prepara el cierre diario", client=claude)
+    assert "daily_close:" in claude.calls[0]["system"]          # listed, not inlined
+    assert "Para qué sirve" not in claude.calls[0]["system"]
+    loaded = claude.calls[1]["messages"][-1]["content"][0]
+    assert "Cierre diario" in loaded["content"] and not loaded.get("is_error")
+
+
+def test_present_shows_only_numbers_that_came_from_a_query(db, data):
+    query = call("query_database", sql="SELECT SUM(amount) AS volumen FROM orders")
+    claude = FakeClaude([
+        [query],
+        [call("present", title="Cierre", kpis=[
+            {"label": "Volumen", "value": 1500.0, "unit": "usd"},
+            {"label": "Utilidad", "value": 42.0, "unit": "usd"}])],      # 42 was never queried
+        [call("present", title="Cierre", kpis=[
+            {"label": "Volumen", "value": 1500.0, "unit": "usd"}])],
+        [say("El volumen fue USD 1.500,00.")],
+    ])
+    result = loop.run(db, "Cierre del día", client=claude)
+    refused = claude.calls[2]["messages"][-1]["content"][0]
+    assert refused.get("is_error") and "42" in refused["content"]
+    kpis = next(b for b in result.blocks if b["type"] == "kpis")
+    assert kpis["items"][0]["value"] == "USD 1.500,00"
+    assert result.blocks[1]["type"] == "heading"           # the presented report, not the query table

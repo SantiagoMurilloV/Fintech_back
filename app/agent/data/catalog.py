@@ -10,20 +10,16 @@ from __future__ import annotations
 # prompt of every turn.
 TABLES: dict[str, tuple[str, dict[str, str]]] = {
     "orders": (
-        "One order. Since the OTC import, mostly one OTC trade per row.",
+        "One order or operation of the client (sale, transfer, trade…).",
         {
-            "id": "text; OTC trades look like OTC-2025-00042 (year + sheet row)",
-            "customer": "client name, upper-case for OTC trades",
-            "amount": "the USD side of the trade (USD wired out for off-ramp, received for on-ramp)",
-            "currency": "currency of amount (USD for OTC)",
-            "status": "approved | pending | rejected | refunded (OTC trades are all approved)",
-            "gateway": "provider that executed it: Conduit, Reap, Mesta, One Trade, Stillman…",
+            "id": "text identifier", "customer": "client name",
+            "amount": "the amount, in `currency`", "currency": "currency code",
+            "status": "approved | pending | rejected | refunded",
+            "gateway": "provider, gateway or channel that processed it",
             "date": "YYYY-MM-DD as text; use substr(date,1,7) for the month",
-            "extra": "JSON. OTC keys: tipo ('Off-ramp'|'On-ramp'), direccion ('SELL'|'BUY'), "
-                     "activo (USDT, USDC…), usdt (crypto amount), precio_cliente, fee_wire, "
-                     "spread_bruto (gross spread, USD), costo_proveedor (provider cost, USD), "
-                     "utilidad (operating profit, USD), beneficiario, source "
-                     "('otc'|'quickbooks'|'api'|'excel'|'manual')",
+            "extra": "JSON with the fields the source brought and the client's own columns. "
+                     "What each key means is in the client context. extra->>'source' says "
+                     "where the row came from ('otc', 'quickbooks', 'api', 'excel', 'manual')",
         },
     ),
     "expenses": (
