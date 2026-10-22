@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from ..config import CHAT_MODEL, CHAT_PROVIDER
 from ..services import llm
-from . import blocks, conversation, skills
+from . import blocks, conversation, present, skills
 from .data import catalog
 from .registry import all_tools, get as get_tool
 
@@ -55,6 +55,9 @@ Cómo trabaja:
 - Si la consulta falla, lea el error y corríjala.
 - Para registrar, editar, borrar o generar documentos use request_action: usted no escribe
   en la base.
+- Para un pedido de los que describe un skill (reportes, cierres, análisis, tableros), cargue
+  primero ese skill con load_skill y sígalo: dice qué contiene, de dónde sale cada cifra y
+  cómo presentarlo. Arme los reportes y tableros con present.
 
 Cómo responde:
 - Español formal colombiano, de «usted». Directo: dos a cuatro frases, sin markdown.
@@ -70,10 +73,15 @@ Hoy es {today}. El usuario está viendo: {view}.
 Criterios del negocio:
 {skills}
 
+Skills disponibles (cárguelos con load_skill cuando el pedido lo requiera):
+{catalog_skills}
+
 Catálogo de datos (lo único que existe para usted):
 {catalog}"""
 
 REQUEST_ACTION = "request_action"
+LOAD_SKILL = "load_skill"
+PRESENT = "present"
 
 
 @dataclass
@@ -100,10 +108,19 @@ def _write_tools() -> list:
 
 
 def tool_specs() -> list[dict]:
-    """Read tools as Anthropic tool definitions, plus the hand-off for actions."""
+    """Read tools as Anthropic tool definitions, plus skills, layout and the hand-off."""
     specs = [{"name": t.name, "description": t.description[:1000],
               "input_schema": t.parameters or {"type": "object", "properties": {}}}
              for t in _read_tools()]
+    specs.append({
+        "name": LOAD_SKILL,
+        "description": "Carga el texto completo de un skill: cómo hacer una tarea del negocio.",
+        "input_schema": {"type": "object", "properties": {
+            "name": {"type": "string", "enum": [e["name"] for e in skills.catalog()]}},
+            "required": ["name"]},
+    })
+    specs.append({"name": PRESENT, "description": present.DESCRIPTION,
+                  "input_schema": present.SPEC})
     writes = _write_tools()
     if writes:
         specs.append({
@@ -125,10 +142,11 @@ def tool_specs() -> list[dict]:
 
 
 def _system(question: str, view: str | None, dialect: str) -> str:
-    names = sorted(set(skills.select(question)) | {"business"} & set(skills.SKILLS))
+    listing = "\n".join(f"- {e['name']}: {e['description']}" for e in skills.catalog()
+                         if e["name"] not in skills.ALWAYS)
     return SYSTEM.format(today=date.today().isoformat(), view=view or "el chat",
-                         skills=skills.content(names) or "(ninguno)",
-                         catalog=catalog.describe(dialect))
+                         skills=skills.content(list(skills.ALWAYS)) or "(ninguno)",
+                         catalog_skills=listing, catalog=catalog.describe(dialect))
 
 
 def _messages(question: str, history: list[dict] | None) -> list[dict]:
@@ -163,6 +181,8 @@ def run(db: Session, question: str, history: list[dict] | None = None,
     specs = tool_specs()
     trace: list[dict] = []
     shown: list[list[dict]] = []
+    presented: list[dict] | None = None
+    known: list[float] = []          # every number a tool returned in this answer
     started = time.monotonic()
 
     for turn in range(MAX_TURNS):
@@ -182,7 +202,7 @@ def run(db: Session, question: str, history: list[dict] | None = None,
         if not calls:
             text = "".join(b.text for b in response.content if getattr(b, "type", "") == "text")
             out = [blocks.text(text.strip())] if text.strip() else []
-            for group in shown[-MAX_SHOWN_RESULTS:]:
+            for group in ([presented] if presented else shown[-MAX_SHOWN_RESULTS:]):
                 out.extend(group)
             return LoopResult(text.strip(), out, trace)
 
@@ -195,13 +215,48 @@ def run(db: Session, question: str, history: list[dict] | None = None,
                 trace.append({"node": "execute", "tool": REQUEST_ACTION,
                               "args": {"tool": action[0]}, "ok": True})
                 return LoopResult("", trace=trace, action=action)
-            tool = get_tool(call.name)
             tick = time.perf_counter()
+            if call.name == LOAD_SKILL:
+                name = str(arguments.get("name") or "")
+                text = skills.SKILLS.get(name)
+                content = text or f"No existe el skill «{name}»."
+                trace.append({"node": "execute", "tool": LOAD_SKILL, "args": {"name": name},
+                              "ok": bool(text), "ms": 0.0})
+                results.append({"type": "tool_result", "tool_use_id": call.id, "content": content,
+                                **({} if text else {"is_error": True})})
+                continue
+            if call.name == PRESENT:
+                missing = present.unbacked(arguments, known)
+                if missing:
+                    content = ("Estas cifras no vienen de ningún resultado de esta respuesta: "
+                               + ", ".join(str(m) for m in missing[:12])
+                               + ". Consúltelas primero (calcule en el SQL) y pase los valores "
+                                 "tal como vinieron.")
+                    ok, error = False, f"{len(missing)} cifra(s) sin respaldo"
+                else:
+                    layout = present.build(arguments)
+                    if arguments.get("save_pdf"):
+                        from ..services import financial_reports
+                        saved = financial_reports.save_pdf(db, {
+                            "title": arguments.get("title") or "Reporte",
+                            "subtitle": arguments.get("subtitle") or "", "blocks": layout})
+                        layout.append(blocks.file(f"{saved['title']}.pdf", saved["pdf_url"],
+                                                  "pdf", "Guardado en Reportes."))
+                    presented = layout
+                    content, ok, error = "Reporte presentado al usuario.", True, None
+                trace.append({"node": "execute", "tool": PRESENT, "ok": ok, "error": error,
+                              "args": {"title": arguments.get("title")},
+                              "ms": round((time.perf_counter() - tick) * 1000, 1)})
+                results.append({"type": "tool_result", "tool_use_id": call.id, "content": content,
+                                **({} if ok else {"is_error": True})})
+                continue
+            tool = get_tool(call.name)
             if tool is None or tool.mutates or tool.conversational:
                 content, ok, error = f"La herramienta «{call.name}» no está disponible.", False, None
             else:
                 try:
                     result = tool.handler(db, **arguments)
+                    known.extend(present.numbers_in(result.data))
                     content, ok = _for_model(result), not result.data.get("error")
                     error = result.data.get("error")
                     if ok and result.blocks:

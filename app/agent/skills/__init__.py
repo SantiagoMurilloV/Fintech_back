@@ -1,35 +1,48 @@
-"""Skill loading.
+"""Playbooks: what the agent knows how to do, general and per client.
 
-Skills are markdown playbooks that tell the planner which tools to chain for a
-family of questions, plus the fixed rules that keep answers consistent. They
-are loaded once at import time and selected by keyword — no LLM involved in the
-selection, so the same question always loads the same skill.
+    playbooks/general/<name>.md           for every client (how to do a task)
+    playbooks/clients/<CLIENT_ID>/*.md    for this client only:
+        context.md                        what the client's business and data mean;
+                                          always in the agent's context
+        <name>.md                         same name as a general one → replaces it
+                                          for this client; a new name → a task only
+                                          this client has
+
+Markdown, not code: adding or changing what the agent knows how to do is
+editing a file. Each file starts with «# Title» and «> one-line description»;
+the agent sees that catalog and loads the full text when a request needs it.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-SKILL_DIR = Path(__file__).parent
+from ...config import CLIENT_ID
+
+ROOT = Path(__file__).resolve().parents[3] / "playbooks"
+GENERAL_DIR = ROOT / "general"
+CLIENT_DIR = ROOT / "clients" / CLIENT_ID
+CONTEXT = "context"
 
 # Keyword patterns that activate each skill file.
 SKILL_TRIGGERS = {
     "monthly_close": r"resumen|cierre|cerro|ejecutivo|como va|margen|ingresos|pdf|informe",
     "anomaly_review": r"alerta|anomal|riesgo|raro|problema|rechazo",
     "schema_evolution": r"columna|campo|calculad|formula|iva|comision",
-    "finance_tasks": r"cierre|estado de resultados|vertical|horizontal|tablero|dashboard|"
-                     r"gerencia|finanzas|operaciones|reporte",
 }
 
 
-def _load() -> dict[str, str]:
-    return {
-        path.stem: path.read_text(encoding="utf-8")
-        for path in sorted(SKILL_DIR.glob("*.md"))
-    }
+def _load() -> tuple[dict[str, str], dict[str, str]]:
+    """{name: text} and {name: "general" | "client"}; client files win by name."""
+    texts, origin = {}, {}
+    for folder, label in ((GENERAL_DIR, "general"), (CLIENT_DIR, "client")):
+        for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+            texts[path.stem] = path.read_text(encoding="utf-8")
+            origin[path.stem] = label
+    return texts, origin
 
 
-SKILLS = _load()
+SKILLS, ORIGIN = _load()
 
 
 def select(question: str) -> list[str]:
@@ -41,3 +54,25 @@ def select(question: str) -> list[str]:
 def content(names: list[str]) -> str:
     """Concatenate the selected skills, for the LLM planner's context."""
     return "\n\n---\n\n".join(SKILLS[name] for name in names if name in SKILLS)
+
+
+# Always in the agent loop's context: what this client's business and data mean.
+ALWAYS = (CONTEXT,)
+
+
+def catalog() -> list[dict]:
+    """Every skill as {name, title, description}, from its first lines.
+
+    A skill file starts with «# Title» and «> one-line description». The agent
+    loop lists them in its prompt and loads the full text on demand
+    (`load_skill`), so the model decides what knowledge it needs.
+    """
+    entries = []
+    for name, text in SKILLS.items():
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        title = lines[0].lstrip("# ").strip() if lines else name
+        description = next((line.lstrip("> ").strip() for line in lines[1:3]
+                            if line.startswith(">")), title)
+        entries.append({"name": name, "title": title, "description": description,
+                        "origin": ORIGIN.get(name, "general")})
+    return entries

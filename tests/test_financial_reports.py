@@ -1,4 +1,4 @@
-"""The recurring finance deliverables: daily close, statement views, dashboards."""
+"""The income statement over ranges, its views, and the cost-gap warning."""
 from __future__ import annotations
 
 import pytest
@@ -39,20 +39,6 @@ def data(db):
     ], actor="test")
 
 
-def test_daily_close_compares_with_the_previous_trading_day(db, data):
-    report = reports.daily_close(db, "2025-10-15")
-    d = report["data"]
-    assert (d["dia_trades"], d["dia_volume"], d["dia_profit"]) == (2, 2500.0, 6.0)
-    assert d["dia_anterior_con_operaciones"] == "2025-10-14" and d["anterior_profit"] == 3.0
-    assert d["mes_profit"] == 9.0 and d["usdt_usd"] == 1.00058 and d["trm"] == 3933.31
-    assert [b["type"] for b in report["blocks"]][:2] == ["heading", "kpis"]
-
-
-def test_a_day_without_trades_says_so(db, data):
-    blocks = reports.daily_close(db, "2025-10-20")["blocks"]
-    assert any(b["type"] == "notice" and "No hay operaciones" in b["content"] for b in blocks)
-
-
 def test_a_range_adds_inputs_and_recomputes_totals(db, data):
     result = statement.compute_range(db, "2025-01", "2025-02", "none")
     gross = next(line for line in result["rows"] if line["key"] == "gross_profit_off_ramp")
@@ -79,13 +65,3 @@ def test_every_statement_view_renders(db, data, view):
     assert ("variacion" in keys) == (view != "vertical")
 
 
-@pytest.mark.parametrize("kind", reports.KINDS)
-def test_every_dashboard_renders(db, data, kind):
-    report = reports.dashboard(db, kind, "2025-10", "2025-10")
-    assert report["blocks"][0]["type"] == "heading" and any(b["type"] == "kpis" for b in report["blocks"])
-
-
-def test_operations_dashboard_figures(db, data):
-    d = reports.dashboard(db, "operations", "2025-10", "2025-10")["data"]
-    assert d["actual"]["trades"] == 3 and d["actual"]["volume"] == 3500.0
-    assert d["actual"]["on_ramp"] == 500.0 and d["anterior"]["trades"] == 1

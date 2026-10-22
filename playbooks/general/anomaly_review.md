@@ -1,4 +1,5 @@
 # Skill: anomaly review
+> Cómo revisar alertas, anomalías y riesgos en los datos.
 
 Applies when the user asks about alerts, anomalies, risks or "what looks wrong".
 

@@ -10,7 +10,6 @@ table and the exit code is the number of failures.
 """
 from __future__ import annotations
 
-import re
 import sys
 import time
 from pathlib import Path
@@ -20,33 +19,9 @@ from sqlalchemy import text
 
 from ...database import SessionLocal
 from .. import graph
+from ..present import numbers_in
 
 CASES = Path(__file__).with_name("cases.yaml")
-_NUMBER = re.compile(r"-?\d[\d.,]*\d|-?\d")
-
-
-def numbers_in(value) -> list[float]:
-    """Every number written in text («259.618,06», «0.99917», «12.139») or held raw."""
-    if isinstance(value, bool):
-        return []
-    if isinstance(value, (int, float)):
-        return [float(value)]
-    if isinstance(value, dict):
-        return [n for v in value.values() for n in numbers_in(v)]
-    if isinstance(value, list):
-        return [n for v in value for n in numbers_in(v)]
-    found = []
-    for token in _NUMBER.findall(str(value)):
-        readings = {token.replace(",", ""),                              # 1,234.56
-                    token.replace(".", "").replace(",", ".")}            # 1.234,56
-        if token.count(".") == 1 and token.count(",") == 0:
-            readings.add(token)                                          # 0.99917
-        for reading in readings:
-            try:
-                found.append(float(reading))
-            except ValueError:
-                pass
-    return found
 
 
 def _scalar(db, sql: str):
@@ -73,7 +48,9 @@ def run_case(db, case: dict) -> dict:
             truth = _scalar(db, case["truth_sql"])
         truth = float(truth) if truth is not None else None
         tolerance = float(case.get("tolerance", 0.01))
-        seen = numbers_in(answer.text) + numbers_in([b.get("rows") for b in shown])
+        seen = (numbers_in(answer.text) + numbers_in([b.get("rows") for b in shown])
+                + numbers_in([[i.get("value") for i in b.get("items", [])] for b in shown
+                              if b.get("type") == "kpis"]))
         hit = truth is not None and any(abs(n - truth) <= tolerance for n in seen)
         outcome.update(ok=hit, detail=f"verdad {truth}")
     return outcome
