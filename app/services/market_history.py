@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import func, insert, select
@@ -37,6 +37,11 @@ BASE_URL = "https://api.binance.com"
 DAY_MS = 86_400_000
 PAGE = 1000
 PAUSE = 0.12            # ~500 calls a minute, well under Binance's weight limit
+
+COINBASE_PRODUCTS = {"USDT-USD": "USDT/USD"}   # dollar stablecoin history (Binance has none)
+COINBASE_SOURCE = "coinbase_1d"
+COINBASE_START = "2021-05-01"
+TRM_URL = "https://www.datos.gov.co/resource/32sa-8pi3.json"   # official COP rate since 1991
 
 # Progress of the run in this process, for the status endpoint.
 STATUS: dict = {"running": False}
@@ -122,6 +127,62 @@ def backfill(db: Session, coins: list[str] | None = None, progress=None) -> dict
     return report
 
 
+def backfill_coinbase(db: Session) -> int:
+    """Daily USDT/USD closes from Coinbase (300 days a call), resumable."""
+    added = 0
+    today = datetime.now(timezone.utc).date()
+    with httpx.Client(timeout=30, headers={"User-Agent": "Mandioca-panel/1.0"}) as client:
+        for product, pair in COINBASE_PRODUCTS.items():
+            last = db.scalar(select(func.max(RateSnapshot.rate_date)).where(
+                RateSnapshot.source == COINBASE_SOURCE, RateSnapshot.pair == pair))
+            start = (datetime.strptime(last, "%Y-%m-%d").date() + timedelta(days=1)) if last \
+                else datetime.strptime(COINBASE_START, "%Y-%m-%d").date()
+            while start < today:
+                end = min(start + timedelta(days=299), today - timedelta(days=1))
+                candles = client.get(
+                    f"https://api.exchange.coinbase.com/products/{product}/candles",
+                    params={"granularity": 86400, "start": f"{start}T00:00:00Z",
+                            "end": f"{end}T23:59:59Z"}).json()
+                rows = []
+                for stamp, _low, _high, _open, close, _vol in (candles if isinstance(candles, list) else []):
+                    day = datetime.fromtimestamp(stamp, timezone.utc).date()
+                    if start <= day <= end:
+                        rows.append({"source": COINBASE_SOURCE, "pair": pair, "price": float(close),
+                                     "rate_date": day.isoformat(), "taken_at": f"{day}T23:59:59"})
+                if rows:
+                    db.execute(insert(RateSnapshot), rows)
+                    db.commit()
+                    added += len(rows)
+                start = end + timedelta(days=1)
+                time.sleep(PAUSE)
+    return added
+
+
+def backfill_trm(db: Session) -> int:
+    """Every official TRM since 1991 (source «trm»), only the days not stored yet."""
+    known = set(db.scalars(select(RateSnapshot.rate_date).where(
+        RateSnapshot.source == "trm", RateSnapshot.pair == "USD/COP")).all())
+    with httpx.Client(timeout=60, headers={"User-Agent": "Mandioca-panel/1.0"}) as client:
+        records = client.get(TRM_URL, params={"$order": "vigenciadesde ASC",
+                                              "$limit": 50000}).json()
+    rows = []
+    for record in records:
+        first = datetime.strptime(record["vigenciadesde"][:10], "%Y-%m-%d").date()
+        last = datetime.strptime((record.get("vigenciahasta") or record["vigenciadesde"])[:10],
+                                 "%Y-%m-%d").date()
+        day = first
+        while day <= last:          # a weekend rate covers several days
+            if day.isoformat() not in known:
+                rows.append({"source": "trm", "pair": "USD/COP", "price": float(record["valor"]),
+                             "rate_date": day.isoformat(), "taken_at": f"{day}T00:00:00"})
+                known.add(day.isoformat())
+            day += timedelta(days=1)
+    for start in range(0, len(rows), 5000):
+        db.execute(insert(RateSnapshot), rows[start:start + 5000])
+        db.commit()
+    return len(rows)
+
+
 if __name__ == "__main__":
     from ..database import Base, SessionLocal, engine
 
@@ -135,6 +196,10 @@ if __name__ == "__main__":
                   flush=True)
 
     with SessionLocal() as session:
+        if sys.argv[1:] in (["trm"], ["usdt"]):
+            added = backfill_trm(session) if sys.argv[1] == "trm" else backfill_coinbase(session)
+            sys.exit(print(f"Listo: {added} días agregados.") or 0)
         result = backfill(session, sys.argv[1:] or None, progress=show)
+        result["days_added"] += backfill_coinbase(session) + backfill_trm(session)
     print(f"\nListo: {result['pairs']} pares, {result['days_added']} días agregados, "
           f"{len(result['pairs_failed'])} fallidos en {round(time.time() - started)} s.")

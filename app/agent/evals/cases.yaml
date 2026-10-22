@@ -98,3 +98,35 @@
   truth_sql: >
     SELECT price FROM rate_snapshots WHERE pair='USD/BRL' AND source='ecb'
     ORDER BY taken_at DESC LIMIT 1
+
+# ---- the seven recurring finance tasks
+- id: task_daily_close
+  question: "Prepara el reporte de cierre diario del 15 de octubre de 2025"
+  truth_sql: >
+    SELECT ROUND(SUM((extra->>'utilidad')::numeric), 2) FROM orders WHERE date = '2025-10-15'
+
+- id: task_income_statement_range
+  question: "Prepara el estado de resultados de enero a marzo de 2025"
+  truth: 339097.97        # the three monthly net results added (15,6k + … from Resultados)
+
+- id: task_vertical_analysis
+  question: "Haz el análisis vertical del estado de resultados de enero 2025: ¿qué porcentaje de la utilidad bruta es la utilidad operacional?"
+  truth: 68.84
+
+- id: task_horizontal_analysis
+  question: "Haz el análisis horizontal del primer trimestre de 2025 contra el mismo trimestre de 2024"
+  truth: 560549.06        # gross profit Q1 2025 − Q1 2024
+
+- id: task_dashboard_operations
+  question: "Prepara el dashboard del departamento de operaciones de octubre 2025"
+  truth_sql: "SELECT COUNT(*) FROM orders WHERE date LIKE '2025-10%'"
+
+- id: task_dashboard_finance
+  question: "Prepara el dashboard de finanzas de enero 2025"
+  truth: 50365.70
+
+- id: task_dashboard_management
+  question: "Prepara el dashboard para la gerencia del último trimestre de 2025"
+  truth_sql: >
+    SELECT ROUND(SUM((extra->>'utilidad')::numeric), 2) FROM orders
+    WHERE date >= '2025-10-01' AND date <= '2025-12-31'

@@ -107,7 +107,8 @@ LOOP_TOOL = "agent_loop"
 _LOOP_TERMS = re.compile(
     r"utilidad|spread|\botc\b|costo|proveedor|precio|cotiza|tradingview|usdt|usdc|btc|eth|"
     r"bitcoin|ethereum|trm|compar|\bvs\b|frente a|versus|\b20\d\d\b|"
-    r"\bsuma|\btotal|promedio|cu[aá]nt[oa]s?\b", re.I)
+    r"\bsuma|\btotal|promedio|cu[aá]nt[oa]s?\b|"
+    r"cierre|estado de resultados|vertical|horizontal|tablero|dashboard", re.I)
 
 
 def _loop_should_take(plan: "router.Plan", question: str) -> bool:

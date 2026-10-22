@@ -349,3 +349,130 @@ def _span(first: str, last: str) -> list[str]:
         out.append(current)
         current = _shift(current, 1)
     return out
+
+
+# ------------------------------------------------------------------- ranges
+
+def _summed(db: Session, periods: list[str]) -> dict[str, float]:
+    """Input figures added over several months (inputs are flows: they add)."""
+    totals: dict[str, float] = {}
+    for month in values_for(db, periods).values():
+        for key, amount in month.items():
+            if amount is not None:
+                totals[key] = totals.get(key, 0.0) + float(amount)
+    return totals
+
+
+def resolve_range(first: str | None, last: str | None, db: Session) -> tuple[str, str]:
+    known = periods_with_data(db)
+    last = last if last and PERIOD_RE.fullmatch(last) else (
+        first if first and PERIOD_RE.fullmatch(first) else (known[0] if known else _this_month()))
+    first = first if first and PERIOD_RE.fullmatch(first) else last
+    if first > last:
+        first, last = last, first
+    if len(_span(first, last)) > 120:
+        raise StatementError("Pida como máximo 10 años a la vez.")
+    return first, last
+
+
+def compare_range(first: str, last: str, compare: str | None) -> tuple[str, str] | None:
+    """The range to compare with: the previous one of the same length («prev»),
+    the same months a year earlier («year»), an explicit «AAAA-MM:AAAA-MM», or none."""
+    months = len(_span(first, last))
+    if compare in (None, "", "none"):
+        return None
+    if compare == "prev":
+        return _shift(first, -months), _shift(first, -1)
+    if compare == "year":
+        return _shift(first, -12), _shift(last, -12)
+    parts = str(compare).split(":")
+    if len(parts) == 2 and all(PERIOD_RE.fullmatch(p) for p in parts):
+        return tuple(sorted(parts))
+    if PERIOD_RE.fullmatch(str(compare)):
+        return compare, compare
+    raise StatementError("Comparación inválida: use prev, year, none, AAAA-MM o AAAA-MM:AAAA-MM.")
+
+
+def compute_range(db: Session, first: str | None = None, last: str | None = None,
+                  compare: str | None = "prev") -> dict:
+    """The statement of a range of months, with vertical and horizontal analysis.
+
+    Inputs are added over the range and every total is its recipe over those
+    sums — so a ratio (basis points, margins) is recomputed for the range,
+    never averaged. Vertical: each line as % of its base account
+    (`percent_of`). Horizontal: the change against `compare`.
+    """
+    rows = [plan_service.view(row) for row in plan_service.accounts(db)]
+    if not rows:
+        raise StatementError("Todavía no hay plan de cuentas. Cárguelo en Configuración.")
+    depth = plan_service.levels(rows)
+    first, last = resolve_range(first, last, db)
+    periods = _span(first, last)
+    against = compare_range(first, last, compare)
+    against_periods = _span(*against) if against else []
+
+    inputs_now = _summed(db, periods)
+    inputs_before = _summed(db, against_periods) if against else {}
+    current = evaluate(rows, inputs_now)
+    previous = evaluate(rows, inputs_before) if against else {}
+    with_data = set(values_for(db, periods))
+
+    lines = []
+    for row in rows:
+        now = current[row["key"]]
+        before = previous.get(row["key"], {}) if against else {}
+        base = current.get(row["percent_of"] or "", {}).get("value")
+        vertical = (now["value"] / base * 100
+                    if now["value"] is not None and base not in (None, 0) else None)
+        variation = variation_pct = None
+        if now["value"] is not None and before.get("value") is not None:
+            variation = now["value"] - before["value"]
+            if row["unit"] == "usd" and before["value"] != 0:
+                variation_pct = variation / abs(before["value"]) * 100
+        lines.append({
+            "key": row["key"], "name": row["name"], "kind": row["kind"], "unit": row["unit"],
+            "nature": row["nature"], "level": depth.get(row["key"], 0),
+            "headline": row["headline"], "percent_of": row["percent_of"],
+            "value": _round(now["value"]), "status": now["status"],
+            "vertical_pct": _round(vertical, 2),
+            "previous": _round(before.get("value")),
+            "variation": _round(variation), "variation_pct": _round(variation_pct, 2),
+            "tone": _tone(row["nature"], variation),
+        })
+    return {"first": first, "last": last, "months": len(periods),
+            "months_with_data": sorted(with_data),
+            "compare": list(against) if against else None,
+            "compare_has_data": bool(inputs_before), "rows": lines}
+
+
+def monthly_series(db: Session, first: str, last: str, keys: list[str]) -> dict[str, dict]:
+    """{month: {key: value}} for a few accounts, one evaluation per month (trend charts)."""
+    rows = [plan_service.view(row) for row in plan_service.accounts(db)]
+    stored = values_for(db, _span(first, last))
+    out = {}
+    for month in _span(first, last):
+        values = evaluate(rows, stored.get(month, {}))
+        out[month] = {key: _round(values.get(key, {}).get("value")) for key in keys}
+    return out
+
+
+def months_missing_costs(db: Session, first: str, last: str) -> list[str]:
+    """Months with figures but none of the costs between the operating result
+    and the net result (commissions, salaries, rent…).
+
+    Read from the plan itself: the last two result totals are taken as the
+    operating and the net result, and the inputs the net one reads that the
+    operating one does not are those costs. A month with none of them makes
+    the net result look like the operating result: the reports say so.
+    """
+    views = [plan_service.view(row) for row in plan_service.accounts(db)]
+    results = [row["key"] for row in views if row["nature"] == "result" and row["kind"] == "total"]
+    if len(results) < 2:
+        return []
+    behind = _inputs_behind(views)
+    below_operating = behind.get(results[-1], set()) - behind.get(results[-2], set())
+    if not below_operating:
+        return []
+    stored = values_for(db, _span(first, last))
+    return [month for month in _span(first, last)
+            if month in stored and not any(stored[month].get(k) for k in below_operating)]
