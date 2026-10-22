@@ -71,10 +71,12 @@ def start_backfill(_=AdminDep):
 
     def work():
         with SessionLocal() as db:
-            try:
-                market_history.backfill(db)
-            except Exception:  # noqa: BLE001 — the status says it failed
-                pass
+            for step in (market_history.backfill, market_history.backfill_coinbase,
+                         market_history.backfill_trm):
+                try:
+                    step(db)
+                except Exception:  # noqa: BLE001 — the status says it failed; next step runs
+                    db.rollback()
 
     threading.Thread(target=work, daemon=True, name="price-backfill").start()
     return {"started": True}

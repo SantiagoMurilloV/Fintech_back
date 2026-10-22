@@ -17,6 +17,8 @@ SKILL_TRIGGERS = {
     "monthly_close": r"resumen|cierre|cerro|ejecutivo|como va|margen|ingresos|pdf|informe",
     "anomaly_review": r"alerta|anomal|riesgo|raro|problema|rechazo",
     "schema_evolution": r"columna|campo|calculad|formula|iva|comision",
+    "finance_tasks": r"cierre|estado de resultados|vertical|horizontal|tablero|dashboard|"
+                     r"gerencia|finanzas|operaciones|reporte",
 }
 
 
