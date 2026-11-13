@@ -1,4 +1,5 @@
-"""Load an OTC trade log (the «OTC» tab of the yearly workbook) as orders.
+"""Load an OTC trade log (the «OTC» tab of the yearly workbook, or any tab
+with the log's columns) as orders.
 
 Each row of that tab is one executed trade:
 
@@ -113,10 +114,38 @@ def _find_header(rows: list[tuple]) -> tuple[int, dict[str, int]]:
             missing = [f for f in REQUIRED if f not in found]
             if missing:
                 raise OTCImportError(
-                    f"La hoja {SHEET} no tiene las columnas: {', '.join(missing)}.")
+                    f"El libro OTC no tiene las columnas: {', '.join(missing)}.")
             return index, found
-    raise OTCImportError(f"No encontré la fila de títulos en la hoja {SHEET} "
+    raise OTCImportError("No encontré la fila de títulos del libro OTC "
                          "(debe tener «Client» y «Direction»).")
+
+
+def _has_trade_header(rows: list[tuple]) -> bool:
+    return any("direction" in (folded := [_fold(c) for c in row]) and "client" in folded
+               for row in rows[:10])
+
+
+def _trade_sheet(book):
+    """The tab holding the trade log: «OTC» if it has the log's columns, else the
+    first tab that does — a 2026 export may come as a single «Sheet1»."""
+    names = ([SHEET] if SHEET in book.sheetnames else []) + \
+            [name for name in book.sheetnames if name != SHEET]
+    for name in names:
+        head = list(book[name].iter_rows(min_row=1, max_row=10, values_only=True))
+        if _has_trade_header(head):
+            return book[name]
+    return None
+
+
+def looks_like_otc(content: bytes) -> bool:
+    """Whether an uploaded workbook is an OTC trade log (any tab with its columns)."""
+    import openpyxl
+
+    try:
+        book = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 — not an xlsx: the generic importer decides
+        return False
+    return _trade_sheet(book) is not None
 
 
 _TEXT_DATE = re.compile(r"^(\d{1,2})/+(\d{1,2})/+(\d{2,4})$")
@@ -150,10 +179,12 @@ def parse(content: bytes) -> dict:
         book = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception:
         raise OTCImportError("No pude abrir el archivo. Use el .xlsx completo del año.") from None
-    if SHEET not in book.sheetnames:
-        raise OTCImportError(f"El archivo no tiene la hoja «{SHEET}». "
-                             f"Hojas encontradas: {', '.join(book.sheetnames)}.")
-    rows = list(book[SHEET].iter_rows(values_only=True))
+    sheet = _trade_sheet(book)
+    if sheet is None:
+        raise OTCImportError("El archivo no tiene un libro OTC: ninguna hoja tiene las columnas "
+                             f"«Client» y «Direction». Hojas encontradas: "
+                             f"{', '.join(book.sheetnames)}.")
+    rows = list(sheet.iter_rows(values_only=True))
     header_index, col = _find_header(rows)
 
     def cell(row, field):
@@ -308,24 +339,24 @@ def run(db: Session, content: bytes, *, dry_run: bool = False) -> dict:
         return report
 
     report["columnas_creadas"] = _ensure_columns(db)
-    ids = [t["id"] for t in parsed["trades"]]
-    existing = {o.id: o for o in db.scalars(select(Order).where(Order.id.in_(ids))).all()} \
-        if ids else {}
-    written = replaced = 0
+    # A year's log is replaced as a whole. Ids come from sheet rows, and a living
+    # log (2026, re-uploaded every month) gains rows in the middle: matching row
+    # by row would overwrite the wrong trades. The workbook is the source of truth.
+    prefix = f"OTC-{parsed['year']}-"
+    before = set(db.scalars(select(Order.id).where(Order.id.like(f"{prefix}%"))).all())
+    if before:
+        db.query(Order).filter(Order.id.like(f"{prefix}%")).delete(synchronize_session=False)
     for trade in parsed["trades"]:
-        order = existing.get(trade["id"])
-        if order is None:
-            db.add(Order(id=trade["id"], customer=trade["customer"], amount=trade["amount"],
-                         currency="USD", status="approved", gateway=trade["provider"],
-                         date=trade["date"], extra=trade["extra"]))
-            written += 1
-        else:
-            order.customer, order.amount, order.currency = trade["customer"], trade["amount"], "USD"
-            order.status, order.gateway, order.date = "approved", trade["provider"], trade["date"]
-            order.extra = trade["extra"]
-            replaced += 1
+        db.add(Order(id=trade["id"], customer=trade["customer"], amount=trade["amount"],
+                     currency="USD", status="approved", gateway=trade["provider"],
+                     date=trade["date"], extra=trade["extra"]))
     db.commit()
-    report["nuevas"], report["reemplazadas"] = written, replaced
-    report["message"] = (f"Se cargaron {written + replaced} operaciones de {report['anio']} "
-                         f"({written} nuevas, {replaced} reemplazadas).")
+    now = {t["id"] for t in parsed["trades"]}
+    report["nuevas"] = len(now - before)
+    report["reemplazadas"] = len(now & before)
+    report["eliminadas"] = len(before - now)
+    report["message"] = (f"Se cargaron {len(now)} operaciones de {report['anio']} "
+                         f"({report['nuevas']} nuevas, {report['reemplazadas']} reemplazadas"
+                         + (f", {report['eliminadas']} que ya no están en el libro"
+                            if report["eliminadas"] else "") + ").")
     return report
