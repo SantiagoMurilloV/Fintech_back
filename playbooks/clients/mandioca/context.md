@@ -8,13 +8,13 @@ recibe USDT/USDC (**on-ramp**). Hay además una mesa de reales (BRL).
 **Dónde está cada dato** (para los playbooks generales):
 | En los playbooks | En Mandioca |
 |---|---|
-| Operaciones | `orders` con `extra->>'source' = 'otc'` (libro OTC 2024–2025) |
+| Operaciones | `orders` con `extra->>'source' = 'otc'` (libro OTC 2024–2026) |
 | Volumen | `amount` (el lado en USD) |
 | Utilidad | `(extra->>'utilidad')::float` — utilidad operativa = spread bruto − costo de proveedor |
 | Costo | `(extra->>'costo_proveedor')::float` — lo que cobró el proveedor |
 | Spread / ingreso bruto | `(extra->>'spread_bruto')::float` |
 | Tipo de operación | `extra->>'tipo'`: 'Off-ramp' o 'On-ramp' (`extra->>'direccion'`: SELL / BUY) |
-| Proveedor | `gateway`: Conduit, Reap, Mesta, One Trade, Stillman |
+| Proveedor | `gateway`: Conduit, Reap, Mesta, One Trade, Stillman (2024–2025); CODEX, Mesta, N-Mesta, T-0, Mansa, HiFi (2026) |
 | Otras divisiones | `extra->>'activo'` (USDT, USDC…) |
 | Margen | en puntos básicos: utilidad / volumen × 10.000 (márgenes de ~30 pb) |
 | Control cruzado (finanzas) | utilidad OTC del período vs. utilidad operacional del estado de resultados |
@@ -31,6 +31,7 @@ recibe USDT/USDC (**on-ramp**). Hay además una mesa de reales (BRL).
 
 **Estado de resultados.** El plan de cuentas de Mandioca (34 cuentas) está en `accounts`; las
 cifras mensuales en `account_values`. Faltan comisiones y gastos de ene–abr 2024 y feb–dic 2025:
-el resultado neto de esos meses está sobreestimado.
+el resultado neto de esos meses está sobreestimado. De 2026 solo hay estado de resultados de
+abril y mayo. Cierre del mes: playbook `monthly_close`.
 
 **Gastos** (`expenses`): `amount` está en `currency`; no sume monedas distintas sin decirlo.

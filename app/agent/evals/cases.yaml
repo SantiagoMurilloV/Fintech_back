@@ -105,6 +105,10 @@
   truth_sql: >
     SELECT ROUND(SUM((extra->>'utilidad')::numeric), 2) FROM orders WHERE date = '2025-10-15'
 
+- id: task_monthly_close
+  question: "¿Cómo cerró octubre de 2026? Dame los valores del mes"
+  truth: 33859620.72      # USD Sent (SELL amount); the row also carries USDT/USD received/sent and fees
+
 - id: task_income_statement_range
   question: "Prepara el estado de resultados de enero a marzo de 2025"
   truth: 339097.97        # the three monthly net results added (15,6k + … from Resultados)
