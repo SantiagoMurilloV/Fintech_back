@@ -34,4 +34,12 @@ cifras mensuales en `account_values`. Faltan comisiones y gastos de ene–abr 20
 el resultado neto de esos meses está sobreestimado. De 2026 solo hay estado de resultados de
 abril y mayo. Cierre del mes: playbook `monthly_close`.
 
-**Gastos** (`expenses`): `amount` está en `currency`; no sume monedas distintas sin decirlo.
+**Costos de proveedor, comisiones y gastos: no son lo mismo** (plan de cuentas oficial:
+playbook `accounting_plan`, cárguelo para cualquier pregunta de cuentas, gastos o comisiones):
+- Costo de proveedor = ítem 3 Transactional Costs: `extra->>'costo_proveedor'` por `gateway`.
+- Comisión = ítem 5.1.1 Sales commissions (`sales_commissions`): lo pagado a terceros que
+  trajeron al cliente.
+- Gastos = el resto del ítem 5 (Total Costs & Expenses − Sales commissions).
+Muéstrelos siempre por separado; «gastos» a secas no incluye comisiones ni proveedores.
+
+**Gastos sueltos** (`expenses`): `amount` está en `currency`; no sume monedas distintas sin decirlo.
