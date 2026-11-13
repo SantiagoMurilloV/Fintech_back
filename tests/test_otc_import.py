@@ -102,3 +102,55 @@ def test_a_file_without_the_trade_log_is_explained(client, db):
     response = client.post("/api/orders/import/otc", headers=_bearer(db, "admin"),
                            files={"file": ("x.xlsx", buffer.getvalue())})
     assert response.status_code == 400 and "OTC" in response.json()["detail"]
+
+
+def _single_tab_workbook(rows) -> bytes:
+    """Like the 2026 export: one tab called «Sheet1», header in row 1."""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Sheet1"
+    sheet.append(["Date", "Month", "Client", "Base", "Direction", "Wire USD Sent", "USDT",
+                  "Client Price", "Wire Fee", "Gross Revenue", "Provider", "Mandioca Cost",
+                  "Bps", "Operating Profit"])
+    for row in rows:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def _trade(day, client, usd):
+    return [datetime(2026, 1, day), "Jan", client, "USDT", "SELL", usd, usd * 1.003, 1.003, 0,
+            usd * 0.003, "Mesta", usd * 1.001, 0.001, usd * 0.002]
+
+
+def test_the_import_button_recognises_an_otc_log_in_any_tab(client, db):
+    admin = _bearer(db, "admin")
+    content = _single_tab_workbook([_trade(2, "Wind", 1000), _trade(3, "Acme", 2000)])
+    reply = client.post("/api/import/excel", headers=admin, data={"kind": "orders"},
+                        files={"file": ("otc 2026.xlsx", content)}).json()
+    assert reply["inserted"] == 2 and "Libro OTC 2026" in reply["message"]
+    order = db.get(Order, "OTC-2026-00002")
+    assert order.extra["tipo"] == "Off-ramp" and order.gateway == "Mesta"
+
+
+def test_a_member_cannot_load_an_otc_log_through_the_button(client, db):
+    content = _single_tab_workbook([_trade(2, "Wind", 1000)])
+    reply = client.post("/api/import/excel", headers=_bearer(db, "miembro"),
+                        data={"kind": "orders"}, files={"file": ("otc.xlsx", content)})
+    assert reply.status_code == 403
+
+
+def test_a_living_log_reloaded_replaces_the_year_as_a_whole(client, db):
+    admin = _bearer(db, "admin")
+    first = _single_tab_workbook([_trade(2, "Wind", 1000), _trade(3, "Acme", 2000)])
+    client.post("/api/import/excel", headers=admin, data={"kind": "orders"},
+                files={"file": ("otc.xlsx", first)})
+    # A month later: a trade inserted in the middle shifts the rows below it.
+    later = _single_tab_workbook([_trade(2, "Wind", 1000), _trade(2, "New", 500),
+                                  _trade(3, "Acme", 2000)])
+    reply = client.post("/api/import/excel", headers=admin, data={"kind": "orders"},
+                        files={"file": ("otc.xlsx", later)}).json()
+    assert reply["inserted"] == 3
+    customers = sorted(o.customer for o in db.query(Order).filter(Order.id.like("OTC-2026-%")))
+    assert customers == ["ACME", "NEW", "WIND"]          # nothing doubled, nothing lost
