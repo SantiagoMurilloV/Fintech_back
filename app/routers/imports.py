@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User
-from ..services import excel_import, otc_import
+from ..services import excel_import
+from ..services import import_batches as batches
 from .auth import AuthDep, current_user
 
 router = APIRouter(tags=["imports"], dependencies=[AuthDep])
@@ -28,21 +29,17 @@ def template(kind: str):
     )
 
 
-def _otc_as_import_result(report: dict) -> dict:
-    """The OTC report in the shape the import dialog shows."""
-    errors = [f"Fila {item['fila']}: {item['motivo']}" for item in report["omitidas_detalle"]]
+def _as_import_result(batch) -> dict:
+    """A batch in the shape the old one-click import answered."""
+    rejected = (batch.exceptions or {}).get("rechazadas") or []
+    corrected = (batch.exceptions or {}).get("fechas_corregidas") or []
+    errors = [f"Fila {item['fila']}: {item['motivo']}" for item in rejected]
     errors += [f"Fila {item['fila']}: año corregido {item['original']} → {item['corregida']}"
-               for item in report["fechas_corregidas_detalle"]]
-    return {
-        "inserted": report["nuevas"] + report["reemplazadas"],
-        "skipped": report["omitidas"],
-        "errors": errors[:20],
-        "message": (f"Libro OTC {report['anio']} detectado. {report['message']} "
-                    f"Omitidas: {report['omitidas']} · años corregidos: "
-                    f"{report['fechas_corregidas']} · posibles duplicados: "
-                    f"{report['posibles_duplicados']}."),
-        "otc": report,
-    }
+               for item in corrected]
+    label = f"{batch.label} detectado. " if batch.kind == "otc" else ""
+    return {"inserted": batch.rows_loaded, "skipped": batch.rows_rejected, "errors": errors[:20],
+            "message": f"{label}{batch.message or ''} Importación #{batch.id}.".strip(),
+            "import_id": batch.id}
 
 
 @router.post("/api/import/excel")
@@ -55,18 +52,13 @@ async def import_excel(kind: str = Form(...), file: UploadFile = None,
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="El archivo supera 10 MB.")
-    # An OTC trade log (Date, Client, Direction, Wire USD Sent…) goes to its own
-    # importer, which keeps every trade field: the generic one would find no
-    # «amount» column and reject every row.
-    if kind == "orders" and otc_import.looks_like_otc(content):
-        if user.role != "admin":
-            raise HTTPException(status_code=403,
-                                detail="Cargar un libro OTC es solo para administradores.")
-        try:
-            return _otc_as_import_result(otc_import.run(db, content))
-        except otc_import.OTCImportError as err:
-            raise HTTPException(status_code=400, detail=str(err)) from None
+    # Every upload goes through the import history (preview + confirm in one
+    # step here), so it can be reconciled later. An OTC log is recognised by its
+    # columns and loaded by the OTC importer.
     try:
-        return excel_import.import_file(db, kind, content, file.filename or "file.xlsx")
-    except ValueError as err:
+        return _as_import_result(batches.apply_now(db, kind, file.filename or "file.xlsx",
+                                                   content, user))
+    except PermissionError as err:
+        raise HTTPException(status_code=403, detail=str(err)) from None
+    except batches.ImportError_ as err:
         raise HTTPException(status_code=400, detail=str(err))

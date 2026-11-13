@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from ..models import CustomColumn, Order
 from . import columns as columns_service
+from . import fingerprint
 
 SHEET = "OTC"
 
@@ -258,7 +259,8 @@ def parse(content: bytes) -> dict:
                 "precio_cliente": _number(cell(row, "client_price")),
                 "fee_wire": _number(cell(row, "wire_fee")),
                 "spread_bruto": round(gross, 2) if gross is not None else None,
-                "costo_proveedor": round(provider_cost, 2) if provider_cost is not None else None,
+                "costo_proveedor": (round(provider_cost, 2) + 0.0)       # no negative zero
+                if provider_cost is not None else None,
                 "utilidad": (round(p, 2) if (p := _number(cell(row, "profit"))) is not None
                              else None),
                 # Column N mixes beneficiaries with helper numbers: only text is a name.
@@ -328,11 +330,28 @@ def _ensure_columns(db: Session) -> list[str]:
     return created
 
 
-def run(db: Session, content: bytes, *, dry_run: bool = False) -> dict:
+def full_exceptions(parsed: dict) -> dict:
+    """Every rejected row, corrected date and repeated-looking trade, uncapped."""
+    keys = Counter((t["date"], t["customer"], t["extra"]["direccion"], t["amount"],
+                    t["extra"]["usdt"]) for t in parsed["trades"])
+    rows_of = defaultdict(list)
+    for t in parsed["trades"]:
+        rows_of[(t["date"], t["customer"], t["extra"]["direccion"], t["amount"],
+                 t["extra"]["usdt"])].append(t["extra"]["fila_hoja"])
+    duplicates = [{"fecha": k[0], "cliente": k[1], "tipo": KIND[k[2]], "usd": k[3],
+                   "veces": n, "filas": rows_of[k]} for k, n in keys.items() if n > 1]
+    duplicates.sort(key=lambda item: (item["fecha"], item["cliente"]))
+    return {"rechazadas": parsed["skipped"], "fechas_corregidas": parsed["fixed_dates"],
+            "posibles_duplicados": duplicates}
+
+
+def run(db: Session, content: bytes, *, dry_run: bool = False,
+        batch_id: int | None = None) -> dict:
     """Parse, report and — unless `dry_run` — write the trades as orders."""
     parsed = parse(content)
     report = _report(parsed)
     report["dry_run"] = dry_run
+    report["excepciones"] = full_exceptions(parsed)
     if dry_run:
         report["message"] = (f"Vista previa: {report['operaciones']} operaciones de "
                              f"{report['anio']} listas para cargar. No se escribió nada.")
@@ -347,9 +366,14 @@ def run(db: Session, content: bytes, *, dry_run: bool = False) -> dict:
     if before:
         db.query(Order).filter(Order.id.like(f"{prefix}%")).delete(synchronize_session=False)
     for trade in parsed["trades"]:
+        extra = dict(trade["extra"])
+        extra["huella"] = fingerprint.order_otc(trade["date"], trade["customer"], trade["amount"],
+                                                trade["provider"], extra)
+        if batch_id is not None:
+            extra["import_batch"] = batch_id
         db.add(Order(id=trade["id"], customer=trade["customer"], amount=trade["amount"],
                      currency="USD", status="approved", gateway=trade["provider"],
-                     date=trade["date"], extra=trade["extra"]))
+                     date=trade["date"], extra=extra))
     db.commit()
     now = {t["id"] for t in parsed["trades"]}
     report["nuevas"] = len(now - before)
