@@ -13,7 +13,8 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..models import CURRENCIES, ORDER_STATUSES, Expense, Order
-from .finance import next_order_id
+from . import fingerprint
+from .finance import next_order_id, usd_eq
 
 ORDER_COLUMNS = ["id", "customer", "amount", "currency", "status", "gateway", "date"]
 EXPENSE_COLUMNS = ["description", "category", "vendor", "amount", "currency", "owner", "date", "receipt"]
@@ -79,8 +80,14 @@ def _parse_date(value) -> str | None:
     return None
 
 
-def import_file(db: Session, kind: str, content: bytes, filename: str) -> dict:
-    """Validate and insert rows; returns counts plus per-row errors."""
+def import_file(db: Session, kind: str, content: bytes, filename: str, *,
+                dry_run: bool = False, batch_id: int | None = None) -> dict:
+    """Validate rows and — unless `dry_run` — insert them.
+
+    Returns counts, every rejected row with its reason, and control totals per
+    month (rows and USD-equivalent amount) computed from the file, so the
+    import can be reconciled against the panel later.
+    """
     try:
         if filename.lower().endswith(".csv"):
             df = pd.read_csv(io.BytesIO(content))
@@ -95,8 +102,10 @@ def import_file(db: Session, kind: str, content: bytes, filename: str) -> dict:
     df.columns = [_normalize_key(c) for c in df.columns]
     rows = df.to_dict(orient="records")
 
-    errors: list[str] = []
+    rejected: list[dict] = []
+    totals: dict[str, dict] = {}
     inserted = 0
+    planned_ids: set[str] = set()
 
     for i, raw in enumerate(rows):
         row_num = i + 2  # 1-indexed + header row
@@ -108,61 +117,85 @@ def import_file(db: Session, kind: str, content: bytes, filename: str) -> dict:
                 return None
             return v
 
+        def reject(reason: str):
+            rejected.append({"fila": row_num, "motivo": reason})
+
         parsed_date = _parse_date(get("date"))
         if not parsed_date:
-            errors.append(f"Fila {row_num}: fecha inválida ({raw.get('date', 'vacía')})")
+            reject(f"fecha inválida ({raw.get('date', 'vacía')})")
             continue
         try:
             amount = float(get("amount"))
         except (TypeError, ValueError):
             amount = 0
         if amount <= 0:
-            errors.append(f"Fila {row_num}: monto inválido")
+            reject("monto inválido o sin columna de monto (amount / monto)")
             continue
         currency = str(get("currency") or "COP").upper()
         if currency not in CURRENCIES:
-            errors.append(f"Fila {row_num}: moneda \"{currency}\" no soportada ({'/'.join(CURRENCIES)})")
+            reject(f"moneda «{currency}» no soportada ({'/'.join(CURRENCIES)})")
             continue
 
         if kind == "orders":
             customer = get("customer")
             if not customer:
-                errors.append(f"Fila {row_num}: falta cliente")
+                reject("falta cliente")
                 continue
             status = STATUS_ALIASES.get(str(get("status") or "pending").strip().lower())
             if status not in ORDER_STATUSES:
-                errors.append(f"Fila {row_num}: estado \"{get('status')}\" no válido")
+                reject(f"estado «{get('status')}» no válido")
                 continue
-            order_id = str(get("id")) if get("id") else next_order_id(db)
-            if db.get(Order, order_id):
-                errors.append(f"Fila {row_num}: id \"{order_id}\" duplicado")
+            order_id = str(get("id")) if get("id") else None
+            if order_id and (order_id in planned_ids or db.get(Order, order_id)):
+                reject(f"id «{order_id}» duplicado")
                 continue
-            db.add(Order(id=order_id, customer=str(customer), amount=amount, currency=currency,
-                         status=status, gateway=str(get("gateway")) if get("gateway") else None,
-                         date=parsed_date, extra={"source": "excel"}))
-            db.flush()  # make next_order_id see this row within the same import
-            inserted += 1
+            if order_id:
+                planned_ids.add(order_id)
+            if not dry_run:
+                gateway = str(get("gateway")) if get("gateway") else None
+                db.add(Order(
+                    id=order_id or next_order_id(db), customer=str(customer), amount=amount,
+                    currency=currency, status=status, gateway=gateway, date=parsed_date,
+                    extra={"source": "excel", "fila": row_num,
+                           **({"import_batch": batch_id} if batch_id is not None else {}),
+                           "huella": fingerprint.order_plain(parsed_date, str(customer), amount,
+                                                             currency, status)}))
+                db.flush()  # make next_order_id see this row within the same import
         else:
             description = get("description")
             if not description:
-                errors.append(f"Fila {row_num}: falta concepto")
+                reject("falta concepto")
                 continue
-            db.add(Expense(
-                description=str(description), category=str(get("category") or "Sin categoría"),
-                vendor=str(get("vendor")) if get("vendor") else None,
-                amount=amount, currency=currency,
-                owner=str(get("owner")) if get("owner") else None,
-                date=parsed_date,
-                receipt_name=str(get("receipt")) if get("receipt") else None,
-                extra={"source": "excel"},
-            ))
-            inserted += 1
+            category = str(get("category") or "Sin categoría")
+            if not dry_run:
+                db.add(Expense(
+                    description=str(description), category=category,
+                    vendor=str(get("vendor")) if get("vendor") else None,
+                    amount=amount, currency=currency,
+                    owner=str(get("owner")) if get("owner") else None,
+                    date=parsed_date,
+                    receipt_name=str(get("receipt")) if get("receipt") else None,
+                    extra={"source": "excel", "fila": row_num,
+                           **({"import_batch": batch_id} if batch_id is not None else {}),
+                           "huella": fingerprint.expense_plain(parsed_date, str(description),
+                                                               amount, currency, category)},
+                ))
+        month = totals.setdefault(parsed_date[:7], {"rows": 0, "volume": 0.0})
+        month["rows"] += 1
+        month["volume"] = round(month["volume"] + usd_eq(amount, currency), 2)
+        inserted += 1
 
-    db.commit()
+    if not dry_run:
+        db.commit()
+    errors = [f"Fila {item['fila']}: {item['motivo']}" for item in rejected]
+    verb = "listas para importar" if dry_run else "importadas"
     return {
         "inserted": inserted,
         "skipped": len(rows) - inserted,
         "errors": errors[:20],
+        "rejected": rejected,
+        "rows_read": len(rows),
+        "totals": dict(sorted(totals.items())),
         # User-facing summary message (Spanish content).
-        "message": f"Se importaron {inserted} de {len(rows)} filas en {kind}.",
+        "message": f"{inserted} de {len(rows)} filas {verb} en {kind}.",
     }

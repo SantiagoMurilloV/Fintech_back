@@ -20,7 +20,7 @@ from .config import (
 )
 from .database import Base, SessionLocal, engine
 from .routers import (
-    auth, chat, columns, demo_feed, expenses, files, imports, integrations, orders,
+    auth, chat, columns, demo_feed, expenses, files, import_batches, imports, integrations, orders,
     plan, rates, reports, settings as settings_router, users,
 )
 from .seed import ensure_admin, seed_if_empty
@@ -203,7 +203,8 @@ app.add_middleware(
 
 for router in (auth.router, users.router, settings_router.router, orders.router, expenses.router, reports.router,
                imports.router, chat.router, integrations.router, columns.router,
-               files.router, demo_feed.router, plan.router, rates.router):
+               files.router, demo_feed.router, plan.router, rates.router,
+               import_batches.router):
     app.include_router(router)
 
 

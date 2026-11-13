@@ -4,7 +4,9 @@ Identifiers, columns and enum codes are English by convention. User-facing
 content (customer names, expense descriptions, chat messages) is data and may
 be in any language.
 """
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON, Boolean, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -376,3 +378,37 @@ class ScrapeRecipe(Base):
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     failures: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class ImportBatch(Base):
+    """One uploaded file: what it held, what was loaded, and the proof.
+
+    Created at upload as a «preview» (nothing written yet), then «applied» on
+    confirm or «discarded». `totals` are the control totals computed from the
+    FILE (per month: rows, volume, spread, provider cost, profit) — the panel
+    is reconciled against them at any time later. Every order or expense it
+    loads carries `extra.import_batch` = this id, its row in the file and a
+    fingerprint of its values, so edits made afterwards are detectable.
+    """
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(20))                  # otc | orders | expenses
+    filename: Mapped[str] = mapped_column(String(200))
+    file_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="preview")  # preview|applied|discarded|superseded
+    label: Mapped[str | None] = mapped_column(String(80), nullable=True)  # «Libro OTC 2026»
+    uploaded_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    uploaded_at: Mapped[str] = mapped_column(String(19))
+    applied_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+    rows_read: Mapped[int] = mapped_column(Integer, default=0)
+    rows_valid: Mapped[int] = mapped_column(Integer, default=0)
+    rows_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    rows_loaded: Mapped[int] = mapped_column(Integer, default=0)
+    rows_replaced: Mapped[int] = mapped_column(Integer, default=0)
+    rows_removed: Mapped[int] = mapped_column(Integer, default=0)
+    totals: Mapped[dict] = mapped_column(JsonColumn, default=dict)      # {month: {rows, volume, …}}
+    exceptions: Mapped[dict] = mapped_column(JsonColumn, default=dict)  # rejected, corrected, duplicates
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The file itself, kept only between preview and confirm.
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
