@@ -15,9 +15,9 @@ nombres y en ese orden**.
 | USD Received | `SUM(amount)` de BUY (on-ramp: el cliente gira USD) |
 | USDT Sent | `SUM((extra->>'usdt')::numeric)` de BUY |
 | Gross Revenue | `SUM((extra->>'spread_bruto')::numeric)` (todas) |
-| Expenses | `SUM(amount)` de `account_values` del mes (`period = 'AAAA-MM'`) con `account_key IN ('salaries','rent','compliance','accounting','auxo','one_to_many','events','merchandizing','other_costs_expenses')` — en `account_values` solo hay cuentas de entrada; los totales (`fixed_costs`, `marketing`) no se guardan |
-| Comission | `account_key = 'sales_commissions'` del mismo mes |
-| Codex | `costo_proveedor` de `gateway = 'CODEX'` |
+| Expenses | Ítem 5 del plan menos 5.1.1 (comisiones): `SUM(amount)` de `account_values` del mes (`period = 'AAAA-MM'`) con `account_key IN ('salaries','rent','compliance','accounting','auxo','one_to_many','events','merchandizing','other_costs_expenses')` — en `account_values` solo hay cuentas de entrada; los totales (`fixed_costs`, `marketing`) no se guardan |
+| Comission | Ítem 5.1.1 Sales commissions: `account_key = 'sales_commissions'` del mismo mes |
+| Codex | (ítem 3, costos de proveedor) `costo_proveedor` de `gateway = 'CODEX'` |
 | Mesta Fee | `costo_proveedor` de `gateway IN ('Mesta', 'N-Mesta')` |
 | T0 | `costo_proveedor` de `gateway = 'T-0'` |
 | Mansa | `costo_proveedor` de `gateway = 'Mansa'` |
