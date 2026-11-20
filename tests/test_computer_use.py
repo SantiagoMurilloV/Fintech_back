@@ -191,8 +191,9 @@ def test_claude_chat_returns_text_and_clean_json(monkeypatch):
     replies = [NS(content=[text("Hola.")]),
                NS(content=[text('Claro: {"tool": "kpis", "arguments": {}}')])]
     client, calls = fake_claude(replies)
-    monkeypatch.setattr(llm, "_client", client)
-    monkeypatch.setattr(llm, "CHAT_PROVIDER", "anthropic")
+    monkeypatch.setattr(llm, "_claude", client)
+    monkeypatch.setattr(llm, "_deepseek", None)
+    llm.reset()
     assert llm.complete("sys", "hola") == "Hola."
     assert llm.chat("sys", [{"role": "assistant", "content": "x"},
                             {"role": "user", "content": "a"},
@@ -208,6 +209,8 @@ def test_claude_chat_returns_text_and_clean_json(monkeypatch):
 def test_a_failing_model_never_breaks_the_turn(monkeypatch):
     def boom(**_):
         raise RuntimeError("overloaded")
-    monkeypatch.setattr(llm, "_client", NS(messages=NS(create=boom)))
-    monkeypatch.setattr(llm, "CHAT_PROVIDER", "anthropic")
+    monkeypatch.setattr(llm, "_claude", NS(messages=NS(create=boom)))
+    monkeypatch.setattr(llm, "_deepseek", None)
+    llm.reset()
     assert llm.complete("sys", "hola") is None
+    llm.reset()

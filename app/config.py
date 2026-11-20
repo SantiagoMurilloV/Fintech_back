@@ -60,15 +60,22 @@ MIN_PASSWORD_LENGTH = 8
 # next restart.
 SEED_DEMO = os.getenv("SEED_DEMO", "true").strip().lower() in ("true", "1", "yes", "si", "sí")
 
-# --- Chat LLM: DeepSeek (OpenAI-compatible API) ---
-# Anthropic (Claude) is the chat model when its key is set; DeepSeek stays as
-# the fallback for a deployment that only has the old key.
+# --- Chat LLM: Claude first, DeepSeek as the fallback ---
+# With both keys set, Claude answers and DeepSeek takes over whenever Claude
+# fails (no credit, bad key, outage): see services/llm.py. With one key, that
+# provider alone. Each provider gets its own model, so a CHAT_MODEL left at
+# «deepseek-chat» never reaches Claude.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or None
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or None
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 CHAT_PROVIDER = "anthropic" if ANTHROPIC_API_KEY else ("deepseek" if DEEPSEEK_API_KEY else None)
-CHAT_MODEL = os.getenv("CHAT_MODEL") or (
-    "claude-opus-5-5" if CHAT_PROVIDER == "anthropic" else "deepseek-chat")
+_CHAT_MODEL_ENV = (os.getenv("CHAT_MODEL") or "").strip()
+CLAUDE_MODEL = (os.getenv("CLAUDE_MODEL") or
+                (_CHAT_MODEL_ENV if _CHAT_MODEL_ENV.startswith("claude") else "claude-opus-5-5"))
+DEEPSEEK_MODEL = (os.getenv("DEEPSEEK_MODEL") or
+                  (_CHAT_MODEL_ENV if _CHAT_MODEL_ENV.startswith("deepseek") else "deepseek-chat"))
+# The primary provider's model, for logs and the health check.
+CHAT_MODEL = CLAUDE_MODEL if CHAT_PROVIDER == "anthropic" else DEEPSEEK_MODEL
 # The price schedulers (market rates three times a day, TradingView) only run
 # where they are switched on: PRICE_SCHEDULER=on. Production imports prices
 # instead of collecting them until someone decides otherwise.

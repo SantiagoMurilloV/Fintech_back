@@ -424,10 +424,17 @@ playbooks/
 
 ## Chat model (Claude)
 
-`services/llm.py` is the one door to the model. With `ANTHROPIC_API_KEY` set
-the chat runs on Claude (`CHAT_MODEL`, default `claude-opus-5-5`); with only
-`DEEPSEEK_API_KEY` it falls back to DeepSeek; with neither, the agent answers
-with its deterministic summaries. `GET /api/health` reports the provider.
+`services/llm.py` is the one door to the model. Claude is the primary
+(`CLAUDE_MODEL`, default `claude-opus-5-5`). With `DEEPSEEK_API_KEY` also set,
+DeepSeek (`DEEPSEEK_MODEL`, default `deepseek-chat`) answers the same call
+whenever Claude fails, and a circuit breaker keeps a failing Claude aside:
+30 minutes for no credit, a bad key or no permission; 2 minutes after three
+outages or overloads in a row. Then Claude is tried again on its own. While
+Claude is aside the agent loop (which needs Claude's tool use) is skipped and
+the fixed pipeline answers with DeepSeek. With a single key, that provider
+alone; with neither, deterministic summaries only. A legacy
+`CHAT_MODEL=deepseek-chat` is never sent to Claude. `GET /api/health` reports
+who is answering, the fallback and why Claude is aside (`chat_status`).
 
 ## Computer use: TradingView spot prices
 
