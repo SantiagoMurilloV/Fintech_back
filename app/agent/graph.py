@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import AgentRun, Conversation
-from ..services import llm
+from ..services import brain, llm
 from . import (blocks, conversation, drafts, formatting, learning, loop, memory, parsing,
                router, skills)
 from .data import coverage
@@ -126,8 +126,22 @@ def _loop_owns(question: str) -> bool:
     return loop.available() and bool(_LOOP_TERMS.search(question))
 
 
+# How things work, not how much: definitions, rules and consequences. With the
+# company brain on, these go to the loop, which can read the brain
+# (search_knowledge) instead of the fixed summary or the generic advisor.
+_CONCEPT_TERMS = re.compile(
+    r"qu[eé] (?:es|son|significa|incluye)|qu[eé] pasa (?:si|cuando)|por ?qu[eé]|"
+    r"c[oó]mo (?:se calcula|se define|funciona|quiere|lo quiere)|definici[oó]n|"
+    r"regla|pol[ií]tica|net revenue|gross revenue|resultado antes de", re.I)
+
+
 def _loop_should_take(plan: "router.Plan", question: str) -> bool:
-    if not loop.available() or plan.tool in ("answer_question",):
+    if not loop.available():
+        return False
+    if brain.enabled() and _CONCEPT_TERMS.search(question):
+        tool = get_tool(plan.tool)
+        return bool(tool is None or not tool.mutates)
+    if plan.tool in ("answer_question",):
         return False
     tool = get_tool(plan.tool)
     return bool(tool and not tool.mutates and _LOOP_TERMS.search(question))

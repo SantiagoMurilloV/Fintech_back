@@ -136,3 +136,45 @@ def test_coverage_never_breaks_the_turn(monkeypatch):
 def test_the_prompt_carries_the_coverage():
     prompt = loop._system("hola", None, "postgresql", "- Operaciones OTC (orders): 2026-10.")
     assert "Cobertura de datos" in prompt and "2026-10" in prompt
+
+
+# ---------------------------------------------- questions are not edit commands
+
+@pytest.mark.parametrize("question", [
+    "¿Qué es el Net Revenue para Mandioca y qué pasa si faltan los gastos del mes?",
+    "¿qué pasa si faltan los gastos del mes?",
+    "¿Por qué bajaron los gastos en octubre?",
+    "¿Cómo cambia el gasto de marketing frente a septiembre?",
+    "¿Cuál pago subió más este mes?",
+])
+def test_a_question_about_how_things_work_is_not_an_edit(question):
+    from app.agent import parsing
+    assert parsing.record_intent(question) is None
+
+
+@pytest.mark.parametrize("command, tool", [
+    ("cambia el monto del gasto 12 a 250 USD", "update_expense"),
+    ("¿puedes cambiar el gasto 12 a 250 USD?", "update_expense"),
+    ("¿qué tal si cambias el gasto 12 a 300?", "update_expense"),
+    ("registra un gasto de 200 USD en hosting", "create_expense"),
+    ("borra el gasto 7", "delete_expense"),
+])
+def test_real_commands_still_work(command, tool):
+    from app.agent import parsing
+    assert parsing.record_tool(command) == tool
+
+
+def test_with_the_brain_on_a_concept_question_goes_to_the_loop(db, monkeypatch):
+    from app.services import brain
+    monkeypatch.setattr(loop, "available", lambda: True)
+    monkeypatch.setattr(brain, "enabled", lambda: True)
+    for question in ("¿Qué es el Net Revenue para Mandioca y qué pasa si faltan los gastos del mes?",
+                     "¿Qué es el Net Revenue?"):
+        assert graph._node_plan(db, question, [], None).tool == graph.LOOP_TOOL
+
+
+def test_without_the_brain_concept_questions_keep_their_old_route(db, monkeypatch):
+    from app.services import brain
+    monkeypatch.setattr(loop, "available", lambda: True)
+    monkeypatch.setattr(brain, "enabled", lambda: False)
+    assert graph._node_plan(db, "¿Qué es el Net Revenue?", [], None).tool == "answer_question"
