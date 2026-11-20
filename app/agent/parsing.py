@@ -50,6 +50,11 @@ EDIT_VERBS = (r"\b(?:edita|modifica|cambia|actualiza|corrige|ajusta|renombra|rec
 DELETE_VERBS = r"\b(?:elimina|borra|quita|remueve|descarta|suprime|anula)\w*"
 EXPENSE_NOUNS = r"\b(?:gasto|egreso|pago|compra)\w*"
 ORDER_NOUNS = r"\b(?:orden|operacion|venta|transaccion|pedido|cobro|ingreso)\w*"
+# A question about how things work («¿qué pasa si faltan los gastos?», «¿por qué
+# bajaron los gastos?») is not a command, even when it carries an edit verb
+# («pasa», «baja», «sube»). Only a question that names a record (an id) can be
+# one: «¿puedes cambiar el gasto 12 a 250?» starts with «puedes», not here.
+QUESTION_START = r"^\W*(?:que|por que|porque|como|cual|cuales|cuanto|cuanta|cuantos|cuantas|cuando|donde|quien|quienes)\b"
 # Things that are created or removed but are not records: they have own tools.
 NON_RECORD = r"\b(?:columna|campo|reporte|grafic|dashboard|conversacion|usuario|cuenta)\w*"
 
@@ -464,6 +469,8 @@ def record_intent(text: str) -> tuple[str, str] | None:
         return None
 
     identified = record_id(text)
+    if not identified and re.search(QUESTION_START, normalized):
+        return None
     entity = None
     if re.search(EXPENSE_NOUNS, normalized):
         entity = "expenses"
