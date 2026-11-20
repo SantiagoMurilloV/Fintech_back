@@ -337,6 +337,49 @@ class AgentRun(Base):
     created_at: Mapped[str] = mapped_column(String(19))
 
 
+class AgentSignal(Base):
+    """What one user message said about the agent: topics asked and the mood.
+
+    Written for every chat message by agent/memory.py. Aggregated, the topics
+    say what this company asks for most (reports, closes, metrics…) and the
+    sentiment says where answers fall short. Never holds figures.
+    """
+    __tablename__ = "agent_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sentiment: Mapped[str] = mapped_column(String(10))          # positive | negative | neutral
+    topics: Mapped[list] = mapped_column(JsonColumn, default=list)
+    excerpt: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[str] = mapped_column(String(19), index=True)
+
+
+class AgentLesson(Base):
+    """Something the team taught the agent: a preference, rule or correction.
+
+    `explicit` lessons («recuerde que…», «de ahora en adelante…») are active
+    at once: the user said them. `correction` lessons are inferred from a
+    negative reaction to an answer and wait as `pending` until an admin
+    approves them, so a misunderstanding never becomes a rule by itself.
+    Active lessons reach every prompt. See agent/memory.py.
+    """
+    __tablename__ = "agent_lessons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    text: Mapped[str] = mapped_column(String(400))
+    pattern: Mapped[str] = mapped_column(String(400), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(12))               # explicit | correction
+    status: Mapped[str] = mapped_column(String(10), index=True)  # active | pending | rejected
+    topics: Mapped[list] = mapped_column(JsonColumn, default=list)
+    # The agent answer the lesson reacts to, for whoever reviews it.
+    evidence: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    repeats: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[str] = mapped_column(String(19))
+    decided_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+
 class RateSnapshot(Base):
     """One market price as a source quoted it at one moment.
 

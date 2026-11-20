@@ -38,7 +38,9 @@ from sqlalchemy.orm import Session
 
 from ..models import AgentRun, Conversation
 from ..services import llm
-from . import blocks, conversation, drafts, formatting, learning, loop, parsing, router, skills
+from . import (blocks, conversation, drafts, formatting, learning, loop, memory, parsing,
+               router, skills)
+from .data import coverage
 from .registry import ToolResult, get as get_tool, schemas
 from . import tools as _tools  # noqa: F401 — importing registers every tool
 
@@ -109,6 +111,19 @@ _LOOP_TERMS = re.compile(
     r"bitcoin|ethereum|trm|compar|\bvs\b|frente a|versus|\b20\d\d\b|"
     r"\bsuma|\btotal|promedio|cu[aá]nt[oa]s?\b|"
     r"cierre|cerr[oóa]|month.?end|fin de mes|estado de resultados|vertical|horizontal|tablero|dashboard", re.I)
+
+
+def _knowledge(db: Session) -> str:
+    """Learned rules and data coverage, for the prompts outside the loop."""
+    taught = memory.context(db)
+    return ((f"What the team taught this assistant:\n{taught}\n\n" if taught else "")
+            + f"Data coverage (if a month is missing, say so; never fill it):\n"
+            + coverage.cached(db))
+
+
+def _loop_owns(question: str) -> bool:
+    """The loop is on and the question is one the fixed tools do not cover."""
+    return loop.available() and bool(_LOOP_TERMS.search(question))
 
 
 def _loop_should_take(plan: "router.Plan", question: str) -> bool:
@@ -222,7 +237,8 @@ def run(db: Session, question: str, history: list[dict] | None = None,
 
     output_blocks = _node_render(result, trace)
     narrative = ("" if failed or awaiting
-                 else _node_narrate(question, plan, result, trace, context, history))
+                 else _node_narrate(question, plan, result, trace, context, history,
+                                   _knowledge(db)))
 
     if narrative:
         # A tool that opens with its own answer sentence (ranking tools mark it
@@ -353,9 +369,11 @@ def _node_plan(db: Session, question: str, trace: list[dict],
             plan = None
         if plan is None:
             plan = _refinement(db, conversation_id, question)
-        if plan is None and not _looks_like_refinement(question):
+        if plan is None and not _looks_like_refinement(question) and not _loop_owns(question):
             # A refinement depends on the previous turn: it is never a
-            # phrasing worth remembering on its own.
+            # phrasing worth remembering on its own. A question the loop owns
+            # (closes, OTC economics, comparisons) is not replayed either: a
+            # route learned before its playbook existed would bypass it.
             plan = learning.recall(db, question)
         if plan is None and loop.available() and not attachment_ids:
             # No rule knows this question: the agent loop answers it, calling as
@@ -480,11 +498,15 @@ def _llm_plan(db: Session, question: str, context: dict | None = None,
     # How this company already asks for things: learned routings guide the
     # planner on brand-new phrasings that resemble known ones.
     learned = learning.examples(db)
+    taught = memory.context(db)
+    covered = coverage.cached(db)
 
     content = llm.complete(
         PLANNER_PROMPT,
         f"Tools:\n{json.dumps(catalog, ensure_ascii=False)}\n\n"
         + (f"Playbooks:\n{skill_context}\n\n" if skill_context else "")
+        + (f"What the team taught this assistant:\n{taught}\n\n" if taught else "")
+        + f"Data coverage (months that exist in the database):\n{covered}\n\n"
         + (f"How this company usually asks (question -> tool already confirmed):\n"
            f"{json.dumps(learned, ensure_ascii=False)}\n\n" if learned else "")
         + f"Today is {datetime.now().date().isoformat()}; a month named without a year is "
@@ -641,7 +663,7 @@ def _node_render(result: ToolResult, trace: list[dict]) -> list[dict]:
 
 def _node_narrate(question: str, plan: router.Plan, result: ToolResult,
                   trace: list[dict], context: dict | None = None,
-                  history: list[dict] | None = None) -> str:
+                  history: list[dict] | None = None, knowledge: str = "") -> str:
     """The assistant's reply above the result. Skipped when the LLM is not configured."""
     started = time.perf_counter()
     tool = get_tool(plan.tool)
@@ -669,6 +691,7 @@ def _node_narrate(question: str, plan: router.Plan, result: ToolResult,
     narrative = llm.chat(
         NARRATOR_PROMPT
         + (f"\n\nPanel criteria:\n{criteria}" if criteria else "")
+        + (f"\n\n{knowledge}" if knowledge else "")
         + f"\n\nWhat the panel can do:\n{capabilities}",
         messages, temperature=NARRATOR_TEMPERATURE, max_tokens=260, caller="narrator") or ""
     if narrative:

@@ -34,6 +34,24 @@ dato», no como 0, y en vez de Net Revenue muestre **«Resultado antes de gastos
 Gross Revenue − fees de proveedor, con una nota que diga qué falta. Los gastos sueltos de la
 tabla `expenses` no son el total del mes; puede mencionarlos aparte, diciendo que son parciales.
 
+**El cuadro de Mandioca (modelo de Alejandro).** Es la estructura de la hoja de cierre: una
+sola fila por mes, una columna por concepto, en este orden y con estos nombres. La respuesta
+debe poder pegarse en esa hoja sin reordenar nada:
+
+| USD Sent | USDT Received | USD Received | USDT Sent | Gross Revenue | Expenses | Comission | Codex | Mesta Fee | T0 | Mansa | Net Revenue |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+
+USD Sent, USD Received, Gross Revenue, Expenses, Comission, los fees y Net Revenue en USD;
+USDT Received y USDT Sent en USDT.
+
+**Cuando falta data, explíquelo; nunca la rellene.** Mire la «Cobertura de datos» del sistema
+antes de consultar. Si al mes le faltan gastos o comisiones (o no tiene operaciones):
+1. Muestre la fila igual, con «sin dato» en lo que falta (nunca 0).
+2. Diga qué falta, de qué mes, y qué consecuencia tiene («sin gastos de octubre no hay Net
+   Revenue; muestro el resultado antes de gastos y comisiones»).
+3. Diga cómo completarlo: cargar los gastos y comisiones del mes en Resultados (estado de
+   resultados) o importar la hoja del mes.
+
 **Presentación.** `present` con:
 1. Tabla «Cierre de <mes> <año>» con las columnas de arriba (unidades `usd`).
 2. KPIs: operaciones, volumen (USD Sent + USD Received), Gross Revenue y Net Revenue (o el

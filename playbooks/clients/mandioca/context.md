@@ -30,9 +30,10 @@ recibe USDT/USDC (**on-ramp**). Hay además una mesa de reales (BRL).
   dígalo en vez de usar otra fecha sin avisar.
 
 **Estado de resultados.** El plan de cuentas de Mandioca (34 cuentas) está en `accounts`; las
-cifras mensuales en `account_values`. Faltan comisiones y gastos de ene–abr 2024 y feb–dic 2025:
-el resultado neto de esos meses está sobreestimado. De 2026 solo hay estado de resultados de
-abril y mayo. Cierre del mes: playbook `monthly_close`.
+cifras mensuales en `account_values`. Qué meses tienen gastos y comisiones lo dice la
+«Cobertura de datos» del sistema (se calcula de la base en cada pregunta): en un mes sin gastos
+o sin comisiones el resultado neto no se puede dar, o queda sobreestimado; dígalo siempre.
+Cierre del mes: playbook `monthly_close`.
 
 **Costos de proveedor, comisiones y gastos: no son lo mismo** (plan de cuentas oficial:
 playbook `accounting_plan`, cárguelo para cualquier pregunta de cuentas, gastos o comisiones):

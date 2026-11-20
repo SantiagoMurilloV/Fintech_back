@@ -29,10 +29,10 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from ..config import CHAT_MODEL, CHAT_PROVIDER
+from ..config import CHAT_MODEL, CHAT_PROVIDER, COMPANY_NAME
 from ..services import llm
-from . import blocks, conversation, present, skills
-from .data import catalog
+from . import blocks, conversation, memory, present, skills
+from .data import catalog, coverage
 from .registry import all_tools, get as get_tool
 
 log = logging.getLogger("agent.loop")
@@ -42,7 +42,7 @@ MAX_SECONDS = 90
 MAX_RESULT_CHARS = 6000
 MAX_SHOWN_RESULTS = 1      # the final result; intermediate lookups stay in the trace
 
-SYSTEM = """Usted es el asistente financiero del panel de Mandioca (rampas USD ↔ USDT/USDC,
+SYSTEM = """Usted es el asistente financiero del panel de {company} (rampas USD ↔ USDT/USDC,
 operaciones OTC, mesa BRL). Responde preguntas sobre las órdenes y operaciones OTC, los
 gastos, los precios de mercado y su historia, el estado de resultados y los reportes.
 
@@ -75,6 +75,11 @@ Criterios del negocio:
 
 Skills disponibles (cárguelos con load_skill cuando el pedido lo requiera):
 {catalog_skills}
+
+{memory}
+
+Cobertura de datos (calculada de la base ahora; si un mes no aparece, no hay datos de él):
+{coverage}
 
 Catálogo de datos (lo único que existe para usted):
 {catalog}"""
@@ -141,10 +146,13 @@ def tool_specs() -> list[dict]:
     return specs
 
 
-def _system(question: str, view: str | None, dialect: str) -> str:
+def _system(question: str, view: str | None, dialect: str,
+            coverage_text: str = "(no disponible)", memory_text: str = "") -> str:
     listing = "\n".join(f"- {e['name']}: {e['description']}" for e in skills.catalog()
                          if e["name"] not in skills.ALWAYS)
-    return SYSTEM.format(today=date.today().isoformat(), view=view or "el chat",
+    return SYSTEM.format(company=COMPANY_NAME, today=date.today().isoformat(),
+                         view=view or "el chat", coverage=coverage_text,
+                         memory=memory_text or "Lo aprendido del equipo: (aún nada)",
                          skills=skills.content(list(skills.ALWAYS)) or "(ninguno)",
                          catalog_skills=listing, catalog=catalog.describe(dialect))
 
@@ -176,7 +184,8 @@ def run(db: Session, question: str, history: list[dict] | None = None,
     """Answer one question with as many read-tool calls as it needs."""
     client = client or llm._client
     dialect = db.get_bind().dialect.name
-    system = _system(question, view, dialect)
+    system = _system(question, view, dialect, coverage.cached(db),
+                     memory.context(db))
     messages = _messages(question, history)
     specs = tool_specs()
     trace: list[dict] = []
