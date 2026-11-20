@@ -173,8 +173,12 @@ async def lifespan(_app: FastAPI):
 
     if JWT_SECRET_IS_EPHEMERAL:
         print("WARNING: JWT_SECRET is not set — sessions end on every restart.")
-    chat_provider = llm.provider()
-    print(f"Chat: {f'{chat_provider} · {CHAT_MODEL}' if chat_provider else 'deterministic only (ANTHROPIC_API_KEY missing)'}")
+    chat_status = llm.status()
+    if chat_status["primary"]:
+        backup = f" (fallback: {chat_status['fallback']} · {chat_status['deepseek_model']})" if chat_status["fallback"] else ""
+        print(f"Chat: {chat_status['primary']} · {CHAT_MODEL}{backup}")
+    else:
+        print("Chat: deterministic only (no ANTHROPIC_API_KEY or DEEPSEEK_API_KEY)")
     print(f"Cloudinary: {'configured' if media.is_configured() else 'NOT configured (local storage)'}")
 
     # The periodic pull runs as long as the app does; it stops with it.
@@ -219,6 +223,7 @@ def health():
         "ok": True,
         "chat": llm.provider() or "deterministic-only",
         "chat_model": CHAT_MODEL if llm.provider() else None,
+        "chat_status": llm.status(),
         "cloudinary": media.is_configured(),
         # Tool count doubles as a smoke check that the agent registry loaded.
         "agent_tools": len(all_tools()),

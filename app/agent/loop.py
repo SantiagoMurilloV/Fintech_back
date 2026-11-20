@@ -29,7 +29,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from ..config import CHAT_MODEL, CHAT_PROVIDER, COMPANY_NAME
+from ..config import CLAUDE_MODEL, COMPANY_NAME
 from ..services import llm
 from . import blocks, conversation, memory, present, skills
 from .data import catalog, coverage
@@ -100,7 +100,9 @@ class LoopResult:
 
 
 def available() -> bool:
-    return CHAT_PROVIDER == "anthropic" and llm.is_available()
+    """The loop needs Claude's tool use; when Claude is out, the fixed pipeline
+    answers with DeepSeek instead (services/llm.py)."""
+    return llm.claude_ready()
 
 
 def _read_tools() -> list:
@@ -182,7 +184,8 @@ def _for_model(result) -> str:
 def run(db: Session, question: str, history: list[dict] | None = None,
         view: str | None = None, client=None) -> LoopResult:
     """Answer one question with as many read-tool calls as it needs."""
-    client = client or llm._client
+    real = client is None             # only the real client feeds the breaker
+    client = client or llm._claude
     dialect = db.get_bind().dialect.name
     system = _system(question, view, dialect, coverage.cached(db),
                      memory.context(db))
@@ -199,9 +202,15 @@ def run(db: Session, question: str, history: list[dict] | None = None,
             break
         tick = time.perf_counter()
         try:
-            response = client.messages.create(model=CHAT_MODEL, max_tokens=1500, system=system,
-                                              tools=specs, messages=messages)
+            response = client.messages.create(model=CLAUDE_MODEL, max_tokens=1500,
+                                              system=system, tools=specs, messages=messages)
+            if real:
+                llm.claude_ok()
         except Exception as err:  # noqa: BLE001 — the turn degrades, never breaks
+            # graph.py falls back to the fixed pipeline, which answers with
+            # DeepSeek when Claude is out.
+            if real:
+                llm.claude_failed(err)
             log.warning("loop: model unavailable (%s)", err)
             trace.append({"node": "loop", "turn": turn, "ok": False, "error": str(err)[:200]})
             return LoopResult("", trace=trace, ok=False)
