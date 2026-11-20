@@ -24,7 +24,7 @@ from .routers import (
     plan, rates, reports, settings as settings_router, users,
 )
 from .seed import ensure_admin, seed_if_empty
-from .services import llm, media
+from .services import brain, llm, media
 from .services import settings as settings_service
 
 
@@ -224,6 +224,7 @@ def health():
         "chat": llm.provider() or "deterministic-only",
         "chat_model": CHAT_MODEL if llm.provider() else None,
         "chat_status": llm.status(),
+        "brain": brain.status(),
         "cloudinary": media.is_configured(),
         # Tool count doubles as a smoke check that the agent registry loaded.
         "agent_tools": len(all_tools()),
