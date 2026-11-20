@@ -4,16 +4,16 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..agent import memory
+from ..agent import lesson_sync, memory
 from ..agent import run as run_agent
 from ..database import get_db
 from ..models import Attachment, Conversation, Message
-from ..services import documents, storage
+from ..services import brain, documents, storage
 from .auth import AdminDep, AuthDep
 
 router = APIRouter(tags=["chat"], dependencies=[AuthDep])
@@ -35,6 +35,13 @@ class ChatBody(BaseModel):
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _schedule_lesson_sync(background: BackgroundTasks) -> None:
+    """Mirror learned lessons into the company brain after the response is
+    sent, with a session of its own. A no-op when brain writes are off."""
+    if brain.writes_ready():
+        background.add_task(lesson_sync.sync_in_background)
 
 
 @router.get("/api/conversations")
@@ -90,7 +97,7 @@ def delete_conversations(body: DeleteConversationsBody, db: Session = Depends(ge
 
 
 @router.post("/api/chat")
-def chat(body: ChatBody, db: Session = Depends(get_db)):
+def chat(body: ChatBody, background: BackgroundTasks, db: Session = Depends(get_db)):
     question = body.content.strip()
     if not question and not body.attachment_ids:
         raise HTTPException(status_code=400, detail="El mensaje está vacío.")
@@ -127,6 +134,7 @@ def chat(body: ChatBody, db: Session = Depends(get_db)):
     # immediately instead of waiting for a reload.
     mutated = any(step.get("node") == "execute" and step.get("mutates") and step.get("ok")
                   for step in answer.trace)
+    _schedule_lesson_sync(background)
 
     return {
         "conversation_id": conversation.id,
@@ -189,8 +197,8 @@ def agent_memory(db: Session = Depends(get_db)):
 
 
 @router.post("/api/agent/lessons/{lesson_id}")
-def decide_lesson(lesson_id: int, body: LessonDecision, db: Session = Depends(get_db),
-                  admin=AdminDep):
+def decide_lesson(lesson_id: int, body: LessonDecision, background: BackgroundTasks,
+                  db: Session = Depends(get_db), admin=AdminDep):
     """Approve (active) or reject an inferred lesson; only admins decide."""
     try:
         lesson = memory.decide(db, lesson_id, body.status, getattr(admin, "email", None))
@@ -198,4 +206,14 @@ def decide_lesson(lesson_id: int, body: LessonDecision, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    _schedule_lesson_sync(background)
     return {"id": lesson.id, "status": lesson.status}
+
+
+@router.post("/api/agent/brain-sync")
+def brain_sync(db: Session = Depends(get_db), admin=AdminDep):
+    """Push changed lessons to the company brain now; counts. Admins only."""
+    if not brain.writes_enabled():
+        raise HTTPException(status_code=409, detail="La escritura al cerebro de la empresa no está "
+                            "configurada (BRAIN_URL y BRAIN_WRITE_TOKEN).")
+    return lesson_sync.sync_lessons(db)

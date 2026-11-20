@@ -21,6 +21,9 @@ ADDED_COLUMNS = [
     ("expenses", "extra", "JSONB DEFAULT '{}'::jsonb"),
     ("messages", "blocks", "JSONB DEFAULT '[]'::jsonb"),
     ("conversations", "draft", "JSONB"),
+    # Lessons mirrored as pages in the company brain (agent/lesson_sync.py).
+    ("agent_lessons", "updated_at", "VARCHAR(26)"),
+    ("agent_lessons", "brain_synced_at", "VARCHAR(26)"),
 ]
 
 # (table, statement) — row rewrites that become no-ops once applied.

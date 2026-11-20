@@ -214,7 +214,7 @@ for router in (auth.router, users.router, settings_router.router, orders.router,
 
 @app.get("/api/health")
 def health():
-    from .agent import learning
+    from .agent import learning, lesson_sync
     from .agent.registry import all_tools
 
     with SessionLocal() as db:
@@ -224,7 +224,7 @@ def health():
         "chat": llm.provider() or "deterministic-only",
         "chat_model": CHAT_MODEL if llm.provider() else None,
         "chat_status": llm.status(),
-        "brain": brain.status(),
+        "brain": {**brain.status(), "lessons_sync": lesson_sync.last_sync()},
         "cloudinary": media.is_configured(),
         # Tool count doubles as a smoke check that the agent registry loaded.
         "agent_tools": len(all_tools()),

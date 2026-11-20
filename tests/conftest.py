@@ -17,7 +17,8 @@ os.environ["PUBLIC_BASE_URL"] = "http://localhost:8000"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 for _key in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "CLOUDINARY_URL", "QUICKBOOKS_CLIENT_ID",
              "QUICKBOOKS_CLIENT_SECRET", "QUICKBOOKS_REDIRECT_URI", "FRONTEND_URL",
-             "EXTERNAL_API_URL", "EXTERNAL_API_KEY", "ADMIN_PASSWORD"):
+             "EXTERNAL_API_URL", "EXTERNAL_API_KEY", "ADMIN_PASSWORD",
+             "BRAIN_URL", "BRAIN_READ_TOKEN", "BRAIN_WRITE_TOKEN"):
     os.environ[_key] = ""
 
 import re  # noqa: E402

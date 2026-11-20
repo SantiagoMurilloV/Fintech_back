@@ -89,6 +89,12 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _stamp() -> str:
+    """A change stamp for `AgentLesson.updated_at`; microseconds keep two
+    changes within one second distinct for the brain sync."""
+    return datetime.now().isoformat(timespec="microseconds")
+
+
 def topics_of(text: str) -> list[str]:
     plain = normalize(text)
     return [name for name, pattern in TOPICS.items() if re.search(pattern, plain)]
@@ -146,6 +152,7 @@ def _store_lesson(db: Session, text: str, kind: str, status: str, topics: list[s
     lesson = db.scalar(select(AgentLesson).where(AgentLesson.pattern == pattern))
     if lesson is not None:
         lesson.repeats += 1
+        lesson.updated_at = _stamp()
         # Said explicitly after being inferred: the user confirmed it.
         if kind == "explicit" and lesson.status == "pending":
             lesson.status, lesson.kind = "active", "explicit"
@@ -153,7 +160,8 @@ def _store_lesson(db: Session, text: str, kind: str, status: str, topics: list[s
     lesson = AgentLesson(text=text.strip()[:MAX_TEXT], pattern=pattern, kind=kind,
                          status=status, topics=topics,
                          evidence=(evidence or "")[:MAX_TEXT] or None,
-                         conversation_id=conversation_id, repeats=1, created_at=_now())
+                         conversation_id=conversation_id, repeats=1, created_at=_now(),
+                         updated_at=_stamp())
     db.add(lesson)
     return lesson
 
@@ -166,11 +174,13 @@ def _store_praise(db: Session, asked: str, answer: str, topics: list[str],
     if lesson is not None:
         lesson.repeats += 1
         lesson.evidence = mask_figures(answer)[:MAX_TEXT]
+        lesson.updated_at = _stamp()
         return lesson
     lesson = AgentLesson(text=asked.strip()[:MAX_TEXT], pattern=pattern, kind="praise",
                          status="active", topics=topics,
                          evidence=mask_figures(answer)[:MAX_TEXT],
-                         conversation_id=conversation_id, repeats=1, created_at=_now())
+                         conversation_id=conversation_id, repeats=1, created_at=_now(),
+                         updated_at=_stamp())
     db.add(lesson)
     return lesson
 
@@ -286,6 +296,7 @@ def decide(db: Session, lesson_id: int, status: str, user: str | None = None) ->
     if lesson is None:
         raise LookupError("La lección no existe.")
     lesson.status, lesson.decided_at, lesson.decided_by = status, _now(), user
+    lesson.updated_at = _stamp()
     db.commit()
     _cache.clear()
     return lesson
