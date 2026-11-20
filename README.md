@@ -382,6 +382,7 @@ server decides what data and actions are allowed.**
 | Product awareness | `playbooks/` | Markdown playbooks, general and per client (see below), read by the agent on demand. |
 | Memory | `agent/learning.py` | Learned routings for the fixed planner. |
 | Data coverage | `agent/data/coverage.py` | Months with OTC operations, expenses and commissions, computed from the database on every turn (cached 5 min) and given to every prompt, so missing data is explained instead of filled. |
+| Company brain | `services/brain.py`, `agent/tools/knowledge.py` | Read-only `search_knowledge` tool over the company's gbrain knowledge graph (definitions, rules, decisions, providers, processes; never figures) via MCP HTTP with a read-scoped bearer token. Registered only when `BRAIN_URL` and `BRAIN_READ_TOKEN` are set; 5 s timeout and a one-minute cooldown after a failure, so the chat never depends on it. Its text reaches the model only, never the rendered blocks. |
 | Conversational memory | `agent/memory.py` | Every user message is read, with no model call, for topics, sentiment and stated rules. Stated rules and corrections that say what was wrong become active lessons at once; praised answers are kept as examples with figures masked; the most asked topics, strengths and weak spots reach every prompt. Figures still come only from the tools. |
 
 **Evals** (`agent/evals/`): `cases.yaml` holds real questions whose truth is
