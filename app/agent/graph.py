@@ -110,7 +110,8 @@ _LOOP_TERMS = re.compile(
     r"utilidad|spread|\botc\b|costo|proveedor|precio|cotiza|tradingview|usdt|usdc|btc|eth|"
     r"bitcoin|ethereum|trm|compar|\bvs\b|frente a|versus|\b20\d\d\b|"
     r"\bsuma|\btotal|promedio|cu[aá]nt[oa]s?\b|"
-    r"cierre|cerr[oóa]|month.?end|fin de mes|estado de resultados|vertical|horizontal|tablero|dashboard", re.I)
+    r"cierre|cerr[oóa]|month.?end|fin de mes|estado de resultados|vertical|horizontal|tablero|dashboard|"
+    r"m[eé]trica|indicador|\bkpis?\b|desempe[nñ]o|rendimiento|operaci[oó]n|operativ", re.I)
 
 
 def _knowledge(db: Session) -> str:

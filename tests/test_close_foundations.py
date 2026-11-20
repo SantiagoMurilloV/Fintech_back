@@ -178,3 +178,46 @@ def test_without_the_brain_concept_questions_keep_their_old_route(db, monkeypatc
     monkeypatch.setattr(loop, "available", lambda: True)
     monkeypatch.setattr(brain, "enabled", lambda: False)
     assert graph._node_plan(db, "¿Qué es el Net Revenue?", [], None).tool == "answer_question"
+
+
+# ------------------------------------------ metrics: interpreted and honest
+
+@pytest.mark.parametrize("question", ["dame las métricas de operación", "metricas de operacion",
+                                      "¿cuáles son los indicadores del mes?", "KPIs de noviembre"])
+def test_metrics_questions_belong_to_the_loop(question, monkeypatch):
+    monkeypatch.setattr(loop, "available", lambda: True)
+    assert graph._loop_owns(question)
+
+
+def _report(**overrides):
+    base = {"period": "2026-11", "prev_period": "2026-10", "revenue_usd": 15140600.0,
+            "expenses_usd": 0.0, "expense_records": 0, "margin_pct": 100.0, "orders_count": 349,
+            "deltas": {"revenue_pct": -56.3, "expenses_pct": None, "margin_pp": 0.0, "orders": -398},
+            "weekly": [{"week": w, "usd": v} for w, v in [(1, 6.5e6), (2, 8.6e6), (3, 0.0), (4, 0.0)]]}
+    base.update(overrides)
+    return base
+
+
+def test_no_expenses_loaded_is_sin_dato_never_zero_or_a_full_margin():
+    from datetime import date
+    from app.agent.tools import analytics
+    items = {i["label"]: i for i in analytics._kpi_items(_report(), today=date(2026, 12, 5))}
+    assert items["Gastos"]["value"] == "sin dato"
+    assert items["Margen operativo"]["value"] == "s/d"
+
+
+def test_a_month_in_progress_says_so_and_hides_weeks_not_reached():
+    from datetime import date
+    from app.agent.tools import analytics
+    today = date(2026, 11, 10)
+    first = analytics._kpi_items(_report(), today=today)[0]
+    assert "al día 10" in first["caption"] and "completo" in first["caption"]
+    assert [w["week"] for w in analytics._weeks_so_far(_report(), today=today)] == [1, 2]
+
+
+def test_with_expenses_the_tiles_keep_their_figures():
+    from datetime import date
+    from app.agent.tools import analytics
+    items = {i["label"]: i for i in analytics._kpi_items(
+        _report(expenses_usd=1000.0, expense_records=3, margin_pct=40.0), today=date(2026, 12, 5))}
+    assert items["Gastos"]["value"] != "sin dato" and items["Margen operativo"]["value"] == "40,0%"

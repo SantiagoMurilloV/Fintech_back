@@ -121,6 +121,7 @@ def month_summary(db: Session, period: str) -> dict:
         "period": period,
         "revenue_usd": round(revenue, 2),
         "expenses_usd": round(total_expenses, 2),
+        "expense_records": len(expenses),
         "margin_pct": round(margin, 1),
         "orders_count": len(orders),
         "by_status": by_status,

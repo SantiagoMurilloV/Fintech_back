@@ -156,6 +156,9 @@ COMPANY_NAME = os.getenv("COMPANY_NAME", "Mandioca")
 # Defaults to the company name, lower-case: «mandioca».
 CLIENT_ID = (os.getenv("CLIENT_ID") or re.sub(r"[^a-z0-9_]+", "_", COMPANY_NAME.lower())).strip("_")
 COMPANY_TAX_ID = os.getenv("COMPANY_TAX_ID", "")
+# What the sum of approved order amounts means on the fixed KPI tiles: sales for a
+# shop, but traded volume for a ramp like Mandioca (its revenue is the spread).
+KPI_AMOUNT_LABEL = os.getenv("KPI_AMOUNT_LABEL") or ("Volumen" if CLIENT_ID == "mandioca" else "Ingresos")
 
 # --- CORS: allowed frontend origins ---
 CORS_ORIGINS = [o.strip() for o in os.getenv(
