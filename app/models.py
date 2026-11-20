@@ -377,6 +377,12 @@ class AgentLesson(Base):
     created_at: Mapped[str] = mapped_column(String(19))
     decided_at: Mapped[str | None] = mapped_column(String(19), nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Changes to text, status, repeats or evidence stamp `updated_at` (with
+    # microseconds); `brain_synced_at` is the `updated_at` of the version the
+    # company brain holds. A lesson is pushed while the two differ.
+    # See agent/lesson_sync.py.
+    updated_at: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    brain_synced_at: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
 
 class RateSnapshot(Base):

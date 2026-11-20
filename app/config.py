@@ -76,13 +76,19 @@ DEEPSEEK_MODEL = (os.getenv("DEEPSEEK_MODEL") or
                   (_CHAT_MODEL_ENV if _CHAT_MODEL_ENV.startswith("deepseek") else "deepseek-chat"))
 # The primary provider's model, for logs and the health check.
 CHAT_MODEL = CLAUDE_MODEL if CHAT_PROVIDER == "anthropic" else DEEPSEEK_MODEL
-# --- Company brain (gbrain, read-only) ---
+# --- Company brain (gbrain) ---
 # The Mandioca knowledge graph served by the mandioca-brain service: rules,
 # decisions, definitions, providers and processes — never figures. Off unless
 # both are set; e.g. BRAIN_URL=http://mandioca-brain.railway.internal:8080
 BRAIN_URL = (os.getenv("BRAIN_URL") or "").rstrip("/") or None
 BRAIN_READ_TOKEN = os.getenv("BRAIN_READ_TOKEN") or None
 BRAIN_TIMEOUT_SECONDS = float(os.getenv("BRAIN_TIMEOUT_SECONDS", "5"))
+# Learned lessons are written to the brain (source `lessons`) with a separate,
+# write-scoped token; the read token never writes. Off unless both BRAIN_URL
+# and BRAIN_WRITE_TOKEN are set. Writes run in the background, so their
+# timeout never delays a chat answer.
+BRAIN_WRITE_TOKEN = os.getenv("BRAIN_WRITE_TOKEN") or None
+BRAIN_WRITE_TIMEOUT_SECONDS = float(os.getenv("BRAIN_WRITE_TIMEOUT_SECONDS", "15"))
 # The price schedulers (market rates three times a day, TradingView) only run
 # where they are switched on: PRICE_SCHEDULER=on. Production imports prices
 # instead of collecting them until someone decides otherwise.
