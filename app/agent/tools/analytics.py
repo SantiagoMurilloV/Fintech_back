@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from datetime import date
+
+from ...config import KPI_AMOUNT_LABEL
 from ...services import finance
 from .. import blocks
 from ..formatting import (
@@ -33,19 +36,54 @@ def _resolve_period(db: Session, period: str | None) -> str:
     return period if period else finance.current_period(db)
 
 
-def _kpi_items(report: dict) -> list[dict]:
+def _in_progress(period: str, today: date | None = None) -> int | None:
+    """The day of the month reached when `period` is the current month, else None."""
+    today = today or date.today()
+    return today.day if period == today.strftime("%Y-%m") else None
+
+
+def _kpi_items(report: dict, today: date | None = None) -> list[dict]:
     d = report["deltas"]
+    day = _in_progress(report["period"], today)
     caption = f"vs. {month_name(report['prev_period'])}"
-    return [
-        {"label": "Ingresos", "value": usd_compact(report["revenue_usd"]),
+    if day:
+        # A month in progress against a whole one: say so, or the drop looks real.
+        caption = f"al día {day} vs. {month_name(report['prev_period'])} completo"
+    no_expenses = not report.get("expense_records")
+    items = [
+        {"label": KPI_AMOUNT_LABEL, "value": usd_compact(report["revenue_usd"]),
          "delta": delta(d["revenue_pct"]), "positive": (d["revenue_pct"] or 0) >= 0, "caption": caption},
-        {"label": "Gastos", "value": usd_compact(report["expenses_usd"]),
-         "delta": delta(d["expenses_pct"]), "positive": (d["expenses_pct"] or 0) <= 0, "caption": caption},
-        {"label": "Margen operativo", "value": percent(report["margin_pct"]),
-         "delta": delta(d["margin_pp"], " pp"), "positive": (d["margin_pp"] or 0) >= 0, "caption": caption},
-        {"label": "Órdenes", "value": integer(report["orders_count"]),
-         "delta": delta(d["orders"], ""), "positive": (d["orders"] or 0) >= 0, "caption": caption},
     ]
+    if no_expenses:
+        # No expenses loaded is not zero expenses: never a 0 nor a 100 % margin.
+        items += [
+            {"label": "Gastos", "value": "sin dato", "delta": "—", "positive": True,
+             "caption": "no hay gastos cargados este mes"},
+            {"label": "Margen operativo", "value": "s/d", "delta": "—", "positive": True,
+             "caption": "requiere los gastos del mes"},
+        ]
+    else:
+        items += [
+            {"label": "Gastos", "value": usd_compact(report["expenses_usd"]),
+             "delta": delta(d["expenses_pct"]), "positive": (d["expenses_pct"] or 0) <= 0,
+             "caption": caption},
+            {"label": "Margen operativo", "value": percent(report["margin_pct"]),
+             "delta": delta(d["margin_pp"], " pp"), "positive": (d["margin_pp"] or 0) >= 0,
+             "caption": caption},
+        ]
+    items.append({"label": "Órdenes", "value": integer(report["orders_count"]),
+                  "delta": delta(d["orders"], ""), "positive": (d["orders"] or 0) >= 0,
+                  "caption": caption})
+    return items
+
+
+def _weeks_so_far(report: dict, today: date | None = None) -> list[dict]:
+    """Weekly buckets, without the weeks of a month in progress that have not started."""
+    day = _in_progress(report["period"], today)
+    weeks = report["weekly"]
+    if day:
+        weeks = [w for w in weeks if (w["week"] - 1) * 7 + 1 <= day]
+    return weeks
 
 
 @tool(
@@ -102,7 +140,7 @@ def get_kpi_dashboard(db: Session, period: str | None = None) -> ToolResult:
 
     weekly = [{"label": f"Sem {w['week']}", "value": w["usd"],
                "muted": len(report["weekly"]) == 5 and w["week"] == 5}
-              for w in report["weekly"]]
+              for w in _weeks_so_far(report)]
     gateways = [{"label": g["name"], "value": g["usd"]} for g in report["gateways"]]
     categories = [{"label": c["name"], "value": c["usd"]} for c in report["expense_categories"]]
 
@@ -112,8 +150,8 @@ def get_kpi_dashboard(db: Session, period: str | None = None) -> ToolResult:
     ]
     if weekly:
         result_blocks.append(blocks.chart(
-            charts.render("bar", weekly, "Ingresos por semana (USD eq.)"),
-            "Ingresos por semana", "bar"))
+            charts.render("bar", weekly, f"{KPI_AMOUNT_LABEL} por semana (USD eq.)"),
+            f"{KPI_AMOUNT_LABEL} por semana", "bar"))
     if gateways:
         result_blocks.append(blocks.chart(
             charts.render("pie", gateways, "Volumen por gateway (USD eq.)"),
