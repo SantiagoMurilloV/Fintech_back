@@ -3,6 +3,9 @@
 # A case passes when that number appears in the answer text or its tables
 # (within `tolerance`, default 0.01). `must_not_change` guards safety cases:
 # the SQL count must be identical before and after the question.
+# Stricter cases add `truths_sql` (label -> SQL: every figure must appear),
+# `expect_columns` (labels that must appear, in order, in one table) and
+# `expect_labels` (words the answer must say).
 
 - id: usdt_tradingview_now
   question: "¿A cuánto está el USDT hoy según TradingView?"
@@ -105,9 +108,47 @@
   truth_sql: >
     SELECT ROUND(SUM((extra->>'utilidad')::numeric), 2) FROM orders WHERE date = '2025-10-15'
 
+# The month-end close (playbooks/clients/mandioca/monthly_close.md): the row must carry
+# Mandioca's columns, with their names and in their order, and the right figures.
 - id: task_monthly_close
   question: "¿Cómo cerró octubre de 2026? Dame los valores del mes"
-  truth: 33859620.72      # USD Sent (SELL amount); the row also carries USDT/USD received/sent and fees
+  # Structure from Alejandro's closing sheet; figures recomputed from the book.
+  truth: 33859620.72      # USD Sent (SELL amount)
+  truths_sql:
+    usdt_received: >
+      SELECT ROUND(SUM((extra->>'usdt')::numeric), 2) FROM orders
+      WHERE extra->>'source'='otc' AND date LIKE '2026-10%' AND extra->>'direccion'='SELL'
+    gross_revenue: >
+      SELECT ROUND(SUM((extra->>'spread_bruto')::numeric), 2) FROM orders
+      WHERE extra->>'source'='otc' AND date LIKE '2026-10%'
+  expect_columns: [USD Sent, USDT Received, USD Received, USDT Sent, Gross Revenue,
+                   Expenses, Comission, Codex, Mesta Fee, T0, Mansa]
+
+# A month with the income statement loaded: Net Revenue is the full formula.
+- id: task_monthly_close_net
+  question: "Dame el cierre de mayo de 2026"
+  truths_sql:
+    gross_revenue: >
+      SELECT ROUND(SUM((extra->>'spread_bruto')::numeric)::numeric, 2) FROM orders WHERE extra->>'source'='otc' AND date LIKE '2026-05%'
+    net_revenue: >
+      SELECT ROUND((SELECT COALESCE(SUM((extra->>'spread_bruto')::numeric), 0)
+                         - COALESCE(SUM((extra->>'costo_proveedor')::numeric), 0)
+                    FROM orders WHERE extra->>'source'='otc' AND date LIKE '2026-05%')
+                 - (SELECT COALESCE(SUM(amount), 0)::numeric FROM account_values
+                    WHERE period = '2026-05' AND account_key IN ('salaries','rent','compliance','accounting','auxo','one_to_many','events','merchandizing','other_costs_expenses', 'sales_commissions')), 2)
+  expect_columns: [USD Sent, USDT Received, USD Received, USDT Sent, Gross Revenue,
+                   Expenses, Comission, Codex, Mesta Fee, T0, Mansa, Net Revenue]
+
+# A month without expenses loaded (Feb–Dec 2025): no zeros, «sin dato», and the result
+# before expenses and commissions instead of Net Revenue.
+- id: task_monthly_close_missing_expenses
+  question: "¿Cómo cerró octubre de 2025?"
+  truths_sql:
+    before_expenses: >
+      SELECT ROUND(SUM((extra->>'spread_bruto')::numeric)
+                   - SUM(COALESCE((extra->>'costo_proveedor')::numeric, 0)), 2)
+      FROM orders WHERE extra->>'source'='otc' AND date LIKE '2025-10%'
+  expect_labels: ["sin dato", "antes de gastos"]
 
 - id: task_income_statement_range
   question: "Prepara el estado de resultados de enero a marzo de 2025"

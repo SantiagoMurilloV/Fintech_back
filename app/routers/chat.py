@@ -9,11 +9,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agent import memory
 from ..agent import run as run_agent
 from ..database import get_db
 from ..models import Attachment, Conversation, Message
 from ..services import documents, storage
-from .auth import AuthDep
+from .auth import AdminDep, AuthDep
 
 router = APIRouter(tags=["chat"], dependencies=[AuthDep])
 
@@ -112,6 +113,8 @@ def chat(body: ChatBody, db: Session = Depends(get_db)):
     db.add(Message(conversation_id=conversation.id, role="user", content=question,
                    blocks=[], created_at=_now()))
     db.commit()
+    # Learn from the message itself: topics, mood, and any rule it states.
+    memory.observe(db, question, history, conversation.id)
 
     answer = run_agent(db, question, history=history, conversation_id=conversation.id,
                        attachment_ids=body.attachment_ids or None, context=body.context)
@@ -171,3 +174,28 @@ async def upload_attachment(file: UploadFile, db: Session = Depends(get_db)):
         "size_bytes": attachment.size_bytes, "url": attachment.url,
         "summary": extracted["summary"],
     }
+
+
+# ------------------------------------------------------------ what it learned
+
+class LessonDecision(BaseModel):
+    status: str      # active | rejected | pending
+
+
+@router.get("/api/agent/memory")
+def agent_memory(db: Session = Depends(get_db)):
+    """What the agent learned from conversations: lessons, topics and mood."""
+    return memory.overview(db)
+
+
+@router.post("/api/agent/lessons/{lesson_id}")
+def decide_lesson(lesson_id: int, body: LessonDecision, db: Session = Depends(get_db),
+                  admin=AdminDep):
+    """Approve (active) or reject an inferred lesson; only admins decide."""
+    try:
+        lesson = memory.decide(db, lesson_id, body.status, getattr(admin, "email", None))
+    except LookupError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return {"id": lesson.id, "status": lesson.status}
