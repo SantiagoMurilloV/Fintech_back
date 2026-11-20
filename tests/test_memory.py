@@ -46,15 +46,19 @@ def test_an_explicit_rule_is_active_at_once(db):
     assert "en USD" in memory.context(db)
 
 
-def test_a_correction_waits_for_approval_and_stays_out_of_the_prompt(db):
+def test_a_correction_that_says_what_was_wrong_is_learned_at_once(db):
     memory.observe(db, "Eso no es, Mansa no va restado en el Net Revenue", ANSWER, 1)
     lesson = db.query(AgentLesson).one()
-    assert lesson.status == "pending" and lesson.kind == "correction"
+    assert lesson.status == "active" and lesson.kind == "correction"
     assert lesson.evidence.startswith("Octubre cerró")
-    assert "Mansa" not in memory.context(db)
-
-    memory.decide(db, lesson.id, "active", "admin@x.co")
     assert "Mansa" in memory.context(db)
+
+
+@pytest.mark.parametrize("complaint", ["Eso no es", "Está mal", "No cuadra, otra vez mal"])
+def test_a_bare_complaint_is_a_miss_not_a_lesson(db, complaint):
+    memory.observe(db, complaint, ANSWER, 1)
+    assert db.query(AgentLesson).count() == 0
+    assert db.query(AgentSignal).one().sentiment == "negative"
 
 
 def test_a_negative_message_without_a_previous_answer_teaches_nothing(db):
@@ -128,13 +132,32 @@ def _bearer(db, role: str) -> dict:
 
 def test_the_endpoints_list_and_only_admins_decide(client, db):
     admin_headers, member = _bearer(db, "admin"), _bearer(db, "miembro")
-    memory.observe(db, "Eso no es, los fees de Codex están mal", ANSWER, 1)
+    memory.observe(db, "Eso no es, los fees de Codex van separados de Mesta", ANSWER, 1)
     lesson_id = db.query(AgentLesson).one().id
     listed = client.get("/api/agent/memory", headers=admin_headers).json()
-    assert listed["lessons"][0]["status"] == "pending"
-    assert client.post(f"/api/agent/lessons/{lesson_id}", json={"status": "active"},
+    assert listed["lessons"][0]["status"] == "active"
+    assert client.post(f"/api/agent/lessons/{lesson_id}", json={"status": "rejected"},
                        headers=member).status_code == 403
-    decided = client.post(f"/api/agent/lessons/{lesson_id}", json={"status": "active"},
+    decided = client.post(f"/api/agent/lessons/{lesson_id}", json={"status": "rejected"},
                           headers=admin_headers)
-    assert decided.json() == {"id": lesson_id, "status": "active"}
+    assert decided.json() == {"id": lesson_id, "status": "rejected"}
     assert db.get(AgentLesson, lesson_id).decided_by == "admin@test"
+
+
+def test_praise_keeps_the_exchange_with_figures_masked(db):
+    memory.observe(db, "Perfecto, gracias", ANSWER, 1)
+    lesson = db.query(AgentLesson).one()
+    assert lesson.kind == "praise" and lesson.status == "active"
+    assert lesson.text == "¿Cómo cerró octubre?"
+    assert "169" not in lesson.evidence and "USD N" in lesson.evidence
+    text = memory.context(db)
+    assert "valoró bien" in text and "¿Cómo cerró octubre?" in text
+
+
+def test_a_reaction_is_credited_to_the_question_it_answers(db):
+    for _ in range(2):
+        memory.observe(db, "Excelente", ANSWER, 1)
+    signal = db.query(AgentSignal).first()
+    assert signal.topics == ["cierre"]
+    assert "han funcionado" in memory.context(db) and "cierre (2)" in memory.context(db)
+    assert db.query(AgentLesson).one().repeats == 2

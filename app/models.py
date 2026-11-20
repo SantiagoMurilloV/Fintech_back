@@ -357,18 +357,17 @@ class AgentSignal(Base):
 class AgentLesson(Base):
     """Something the team taught the agent: a preference, rule or correction.
 
-    `explicit` lessons («recuerde que…», «de ahora en adelante…») are active
-    at once: the user said them. `correction` lessons are inferred from a
-    negative reaction to an answer and wait as `pending` until an admin
-    approves them, so a misunderstanding never becomes a rule by itself.
-    Active lessons reach every prompt. See agent/memory.py.
+    `explicit` lessons («recuerde que…», «de ahora en adelante…») and
+    `correction` lessons (a negative reaction to an answer that says what was
+    wrong) are both active at once, by sentiment analysis. Admins may reject
+    one through the API. Active lessons reach every prompt. See agent/memory.py.
     """
     __tablename__ = "agent_lessons"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     text: Mapped[str] = mapped_column(String(400))
     pattern: Mapped[str] = mapped_column(String(400), unique=True, index=True)
-    kind: Mapped[str] = mapped_column(String(12))               # explicit | correction
+    kind: Mapped[str] = mapped_column(String(12))               # explicit | correction | praise
     status: Mapped[str] = mapped_column(String(10), index=True)  # active | pending | rejected
     topics: Mapped[list] = mapped_column(JsonColumn, default=list)
     # The agent answer the lesson reacts to, for whoever reviews it.
